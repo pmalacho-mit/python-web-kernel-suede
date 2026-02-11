@@ -1,0 +1,12 @@
+; DO NOT EDIT (unless you know what you are doing)
+;
+; This subdirectory is a git "subrepo", and this file is maintained by the
+; git-subrepo command. See https://github.com/ingydotnet/git-subrepo#readme
+;
+[subrepo]
+	remote = https://github.com/pmalacho-mit/python-web-kernel-suede
+	branch = release
+	commit = 6111f69af1f3339a49a0fc957d81b9ac75095b24
+	parent = 7955f23acc665dccaacae07d5d3e976e5783af8b
+	method = merge
+	cmdver = 0.4.9
