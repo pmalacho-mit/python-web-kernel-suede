@@ -1,3 +1,28 @@
+<script lang="ts" module>
+  import { type Output, accessor, is } from "./output";
+
+  /**
+   * Just putting HTML with script tags on the DOM will not get them evaluated.
+   * Using this hack we execute them anyway.
+   * @param element
+   */
+  const evalScriptTagsHack = (element: Element) =>
+    element
+      .querySelectorAll('script[type|="text/javascript"]')
+      .forEach(function (e) {
+        if (e.textContent !== null) eval(e.textContent);
+      });
+
+  export const output = {
+    unrecognized,
+    stream,
+    displayData,
+    executeResult,
+    errorResult,
+    any,
+  };
+</script>
+
 {#snippet unrecognized(identifier: string | Output.Any, detail: string)}
   <div>
     Unrecognized {typeof identifier === "string"
@@ -59,4 +84,18 @@
       {line}
     {/each}
   </pre>
+{/snippet}
+
+{#snippet any(output: Output.Any)}
+  {#if is(output, "stream")}
+    {@render stream(output)}
+  {:else if is(output, "display_data")}
+    {@render displayData(output)}
+  {:else if is(output, "execute_result")}
+    {@render executeResult(output)}
+  {:else if is(output, "error")}
+    {@render errorResult(output)}
+  {:else}
+    {@render unrecognized("output_type", output.output_type)}
+  {/if}
 {/snippet}

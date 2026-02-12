@@ -4,12 +4,12 @@ import KernelWorker from "./worker/kernel-worker?worker";
 import { AsyncMemory } from "./worker/async-memory";
 import { ObjectProxyHost } from "./worker/object-proxy";
 import type { Kernel } from "./worker/kernel-worker";
-import type { NotebookFilesystemSync } from "./worker/emscripten-fs";
+import type { SyncFileSystem } from "./worker/emscripten-fs";
 import { flatPromise, type Expand } from "./utils";
 import { type Output, form } from "./output";
 
 export type Environment = {
-  fs: NotebookFilesystemSync & { root: string };
+  fs: SyncFileSystem & { root: string };
   input: (prompt: string) => string;
 };
 
@@ -213,40 +213,114 @@ export default class PythonKernel {
     this.asyncMemory.dispose();
   }
 
-  static DefaultEnvironment = ({
+  static readonly DefaultFileSystemRoot = "/home/pyodide";
+
+  static readonly DefaultInput = (prompt: string) =>
+    window.prompt(prompt) ?? "";
+
+  static readonly EmptyFileSystem = (
+    root = PythonKernel.DefaultFileSystemRoot,
     log = false,
-    root = "/home/pyodide",
-    input = (prompt: string) => window.prompt(prompt) ?? "",
-  }: {
-    log?: boolean;
-    root?: string;
-    input?: (prompt: string) => string;
-  } = {}): Environment => ({
-    input,
-    fs: {
-      root,
-      get(opts: { path: string }) {
-        if (log) console.log("fs.get invoked with:", opts);
-        return { ok: true as const, data: null };
-      },
-      put(opts: { path: string; value: string | null }) {
-        if (log) console.log("fs.put invoked with:", opts);
-        return { ok: true as const, data: undefined };
-      },
-      delete(opts: { path: string }) {
-        if (log) console.log("fs.delete invoked with:", opts);
-        return { ok: true as const, data: undefined };
-      },
-      move(opts: { path: string; newPath: string }) {
-        if (log) console.log("fs.move invoked with:", opts);
-        return { ok: true as const, data: undefined };
-      },
-      listDirectory(opts: { path: string }) {
-        if (log) console.log("fs.listDirectory invoked with:", opts);
-        return { ok: true as const, data: [] };
-      },
+  ) => ({
+    root,
+    get(opts: { path: string }) {
+      if (log) console.log("fs.get invoked with:", opts);
+      return { ok: true as const, data: null };
+    },
+    put(opts: { path: string; value: string | null }) {
+      if (log) console.log("fs.put invoked with:", opts);
+      return { ok: true as const, data: undefined };
+    },
+    delete(opts: { path: string }) {
+      if (log) console.log("fs.delete invoked with:", opts);
+      return { ok: true as const, data: undefined };
+    },
+    move(opts: { path: string; newPath: string }) {
+      if (log) console.log("fs.move invoked with:", opts);
+      return { ok: true as const, data: undefined };
+    },
+    listDirectory(opts: { path: string }) {
+      if (log) console.log("fs.listDirectory invoked with:", opts);
+      return { ok: true as const, data: [] };
     },
   });
 
-  static Default = () => new PythonKernel(PythonKernel.DefaultEnvironment());
+  static readonly SetFileSystemDefaults: (
+    options: Partial<FileSystem.SanitizeOptions>,
+  ) => asserts options is FileSystem.SanitizeOptions = (options) => {
+    options.root ??= PythonKernel.DefaultFileSystemRoot;
+    options.removeRoot ??= true;
+    options.removeLeadingSlash ??= true;
+  };
+
+  static readonly SanitizePath = (
+    path: string,
+    { removeRoot, removeLeadingSlash, root }: FileSystem.SanitizeOptions,
+  ) => {
+    if (removeRoot && path.startsWith(root)) path = path.replace(root, "");
+    if (removeLeadingSlash && path.startsWith("/")) path = path.slice(1);
+    return path;
+  };
+
+  static readonly ReadonlyFileSystem = (
+    options: { get: FileSystem.Get } & FileSystem.CreationOptions,
+  ): Environment["fs"] => {
+    PythonKernel.SetFileSystemDefaults(options);
+    const { get, root, log } = options;
+    const fs = PythonKernel.EmptyFileSystem(root, log);
+    return {
+      ...fs,
+      get(opts) {
+        const data = get(PythonKernel.SanitizePath(opts.path, options));
+        if (typeof data === "string") return { ok: true as const, data };
+        else return fs.get(opts);
+      },
+    };
+  };
+
+  static WriteOnlyFileSystem = (
+    options: { put: FileSystem.Put } & FileSystem.CreationOptions,
+  ): Environment["fs"] => {
+    PythonKernel.SetFileSystemDefaults(options);
+    const { root, log, put } = options;
+    const fs = PythonKernel.EmptyFileSystem(root, log);
+    return {
+      ...fs,
+      put({ path, value }) {
+        put(PythonKernel.SanitizePath(path, options), value);
+        return { ok: true as const, data: undefined };
+      },
+    };
+  };
+
+  static readonly ReadWriteFileSystem = (
+    options: Parameters<typeof PythonKernel.ReadonlyFileSystem>[0] &
+      Parameters<typeof PythonKernel.WriteOnlyFileSystem>[0],
+  ): Environment["fs"] => ({
+    ...PythonKernel.WriteOnlyFileSystem(options),
+    get: PythonKernel.ReadonlyFileSystem(options).get,
+  });
+
+  static readonly DefaultEnvironment = ({
+    fs = PythonKernel.EmptyFileSystem(),
+    input = PythonKernel.DefaultInput,
+  }: Partial<Environment> = {}): Environment => ({ input, fs });
+
+  static readonly Default = () =>
+    new PythonKernel(PythonKernel.DefaultEnvironment());
+}
+
+namespace FileSystem {
+  export type SanitizeOptions = {
+    root: string;
+    removeRoot: boolean;
+    removeLeadingSlash: boolean;
+  };
+
+  export type CreationOptions = Partial<SanitizeOptions> & {
+    log?: boolean;
+  };
+
+  export type Get = (path: string) => string | undefined | null;
+  export type Put = (path: string, value: string | null) => void;
 }

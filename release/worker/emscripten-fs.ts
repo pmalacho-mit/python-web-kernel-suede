@@ -10,7 +10,7 @@
 import type { PyodideAPI } from "pyodide";
 import type { SyncResult } from "../utils";
 
-export interface NotebookFilesystemSync {
+export interface SyncFileSystem {
   /**
    * Get a file or directory at a given path.
    * @returns The contents of the file. `null` corresponds to a directory
@@ -98,7 +98,7 @@ const methods = (
     FS,
     ERRNO_CODES,
   }: Pick<PyodideAPI, "FS" | "ERRNO_CODES"> & { FS: AdvancedEmscriptenFS },
-  custom: NotebookFilesystemSync,
+  custom: SyncFileSystem,
   log: boolean = false,
 ) => {
   let createNode: AdvancedEmscriptenFS["createNode"];
@@ -362,7 +362,7 @@ export class EMFS implements Emscripten.FileSystemType {
 
   constructor(
     pyodide: PyodideAPI,
-    custom: NotebookFilesystemSync,
+    custom: SyncFileSystem,
     log: boolean = false,
   ) {
     this.FS = pyodide.FS;

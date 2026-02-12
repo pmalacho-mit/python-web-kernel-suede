@@ -1,5 +1,5 @@
 import { AsyncMemory } from "./async-memory";
-import type { NotebookFilesystemSync } from "./emscripten-fs";
+import type { SyncFileSystem } from "./emscripten-fs";
 import {
   ObjectId,
   ObjectProxyClient,
@@ -77,7 +77,7 @@ const handler = {
     );
     const input = proxy.getObjectProxy<() => string>(data.ids.getInput);
     const asyncFs = proxy.getObjectProxy(data.ids.filesystem);
-    const syncFs: NotebookFilesystemSync = {
+    const syncFs: SyncFileSystem = {
       get: (opts) => proxy.thenSync(asyncFs.get(opts)),
       put: (opts) => proxy.thenSync(asyncFs.put(opts)),
       delete: (opts) => proxy.thenSync(asyncFs.delete(opts)),
@@ -132,7 +132,7 @@ export class Kernel {
   /** BEGIN: Properties set by the initialize message */
   proxy!: ObjectProxyClient;
   input!: (prompt: string) => string;
-  syncFs!: NotebookFilesystemSync;
+  syncFs!: SyncFileSystem;
   pyodide!: PyodideInstance;
   /** END: Properties set by the initialize message */
 
