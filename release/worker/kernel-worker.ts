@@ -7,7 +7,7 @@ import {
 } from "./object-proxy";
 import { PyodideInstance } from "../pyodide/instance";
 import type { Typed } from "../utils";
-import { form, type Output } from "../output";
+import { make, type Output } from "../output";
 
 export namespace Kernel {
   export type Requests = {
@@ -104,7 +104,7 @@ const handler = {
       if (value) manager.output(value);
     } catch (e) {
       manager.output(
-        form("error", {
+        make("error", {
           ename: "ExecutionError",
           evalue: (e as Error).message,
           traceback: (e as Error).stack ? (e as Error).stack!.split("\n") : [],
