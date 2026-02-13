@@ -1,5 +1,5 @@
-export { default as Kernel, type Environment, type Run } from "./Kernel";
-export { Output } from "./output";
+export { default as PythonKernel, type Environment } from "./PythonKernel";
+export type { Output } from "./output";
 import { output } from "./Snippets.svelte";
 
 export const snippets = { output };

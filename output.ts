@@ -99,23 +99,23 @@ export function accessor(
   throw new Error("Unreachable");
 }
 
-export function make(
+export function form(
   output: "stream",
   name: keyof typeof keys.stream,
   text: MultilineString,
 ): Output.Stream;
-export function make(
+export function form(
   output: "execute_result",
   type: keyof typeof keys.execute_result | "latex",
   data: string,
 ): Output.ExecuteResult;
-export function make(
+export function form(
   output: "display_data",
   type: keyof typeof keys.display_data,
   payload: Payload,
 ): Output.DisplayData;
-export function make(output: "error", payload: ErrorProperties): Output.Error;
-export function make(
+export function form(output: "error", payload: ErrorProperties): Output.Error;
+export function form(
   output: Output.Type,
   second: string | ErrorProperties,
   third?: MultilineString | Payload,
@@ -167,9 +167,3 @@ export function make(
       throw new Error(`Unknown output type: ${output}`);
   }
 }
-
-export const Output = {
-  is,
-  accessor,
-  make,
-};
