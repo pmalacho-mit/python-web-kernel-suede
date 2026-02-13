@@ -6,7 +6,7 @@ import { ObjectProxyHost } from "./worker/object-proxy";
 import type { Kernel } from "./worker/kernel-worker";
 import type { SyncFileSystem } from "./worker/emscripten-fs";
 import { flatPromise, type Expand } from "./utils";
-import { type Output, form } from "./output";
+import { type Output, make } from "./output";
 
 export type Environment = {
   fs: SyncFileSystem & { root: string };
@@ -192,7 +192,7 @@ export default class PythonKernel {
         executing = true;
       } catch (e: any) {
         callbacks.output?.(
-          form("error", {
+          make("error", {
             ename: e.name,
             evalue: e.message,
             traceback: e.stack ? e.stack.split("\n") : [],
