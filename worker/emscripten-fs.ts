@@ -125,9 +125,7 @@ const methods = (
     getattr: (node) => {
       logCall("nodeOps.getattr", { node: node.name, id: node.id });
       const { id: ino, mode, rdev } = node;
-      const time = new Date(
-        /*isCustomNode(node) ? node.timestamp! :*/ Date.now(),
-      );
+      const time = new Date(isCustomNode(node) ? node.timestamp! : Date.now());
       return {
         dev,
         rdev,
@@ -228,16 +226,10 @@ const methods = (
   const streamOps: FS.StreamOps = {
     open: (stream) => {
       const path = realPath(stream.object);
-      logCall("streamOps.open", {
-        path,
-        isFile: FS.isFile(stream.object.mode),
-      });
+      logCall("streamOps.open", { path });
 
       if (!FS.isFile(stream.object.mode)) return;
       const result = syncResult(custom.get({ path }));
-      logCall("streamOps.open::get", {
-        result,
-      });
       if (result === null) return;
       (stream as CustomStream).fileData = encoder.encode(result);
     },
@@ -371,7 +363,7 @@ export class EMFS implements Emscripten.FileSystemType {
   constructor(
     pyodide: PyodideAPI,
     custom: SyncFileSystem,
-    log: boolean = true,
+    log: boolean = false,
   ) {
     this.FS = pyodide.FS;
     this.methods = methods(

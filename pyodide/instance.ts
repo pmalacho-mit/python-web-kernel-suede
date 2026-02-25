@@ -39,12 +39,14 @@ const io = (
 
   const raw = (charCode: number) => {
     if (charCode === Char.NewLine) {
+      console.log(acc);
       manager.output(form("stream", "out", acc));
       acc = "";
     } else acc += String.fromCharCode(charCode);
   };
 
   const batched = (output: string) => {
+    console.error(output);
     manager.output(form("stream", "err", output));
   };
 
@@ -57,8 +59,7 @@ export class PyodideInstance {
 
   proxiedGlobalThis: undefined | any;
 
-  pyodide?: PyodideAPI;
-  root?: string;
+  pyodide: PyodideAPI | undefined = undefined;
 
   constructor(options: {
     globalThisId: string;
@@ -69,7 +70,6 @@ export class PyodideInstance {
   }
 
   async init(manager: Kernel, root: string): Promise<any> {
-    this.root = root;
     this.proxiedGlobalThis = this.proxyGlobalThis(manager, this.globalThisId);
 
     const indexURL = `https://cdn.jsdelivr.net/pyodide/v${version}/full/`;
@@ -116,7 +116,10 @@ export class PyodideInstance {
       messageCallback: (msg) => {
         if (wasAlreadyLoaded === true) return;
 
-        if (msg.match(/Loaded.*\smatplotlib/)) patchMatplotlib(this.pyodide!);
+        if (msg.match(/Loaded.*\smatplotlib/)) {
+          console.debug("Hooking matplotlib output to Starboard");
+          patchMatplotlib(this.pyodide!);
+        }
 
         if (wasAlreadyLoaded === false) {
           if (msg.match(/already loaded from default channel$/)) {
@@ -141,87 +144,12 @@ export class PyodideInstance {
     });
   }
 
-  async unloadLocalModules() {
-    const code = `import sys
-import importlib
-from pathlib import PurePosixPath
-
-def _module_paths(mod):
-    """Return possible filesystem paths a module/package lives at."""
-    spec = getattr(mod, "__spec__", None)
-    out = set()
-
-    # Normal modules/packages
-    f = getattr(mod, "__file__", None)
-    if f:
-        out.add(str(PurePosixPath(f)))
-
-    # importlib metadata
-    if spec is not None:
-        origin = getattr(spec, "origin", None)
-        if origin and origin not in ("built-in", "frozen"):
-            out.add(str(PurePosixPath(origin)))
-
-        # Namespace packages / packages: list of directories
-        locs = getattr(spec, "submodule_search_locations", None)
-        if locs:
-            for p in locs:
-                out.add(str(PurePosixPath(p)))
-
-    return out
-
-def unload_local_modules(
-    local_roots=("/home/pyodide",),   # add your project root(s) here
-    external_roots=("/lib/python", "/usr/lib", "/usr/local/lib"),
-    extra_keep=(),
-):
-    """
-    Remove modules considered 'local' from sys.modules.
-    Heuristic: module path is under a local_root and NOT under any external_root.
-    """
-    local_roots = tuple(str(PurePosixPath(p)) for p in local_roots)
-    external_roots = tuple(str(PurePosixPath(p)) for p in external_roots)
-    keep = set(extra_keep)
-
-    to_delete = []
-    for name, mod in list(sys.modules.items()):
-        if mod is None or name in keep:
-            continue
-
-        paths = _module_paths(mod)
-        if not paths:
-            continue  # built-in/frozen/no-file modules -> skip
-
-        # "local" if any path is inside local_roots, and none are inside external_roots
-        is_under_local = any(any(p.startswith(r.rstrip("/") + "/") or p == r for r in local_roots) for p in paths)
-        is_under_external = any(any(p.startswith(r.rstrip("/") + "/") or p == r for r in external_roots) for p in paths)
-
-        if is_under_local and not is_under_external:
-            to_delete.append(name)
-
-    for name in to_delete:
-        sys.modules.pop(name, None)
-
-    importlib.invalidate_caches()
-    return to_delete;
-    
-unload_local_modules(local_roots=("${this.root}",))
-`;
-
-    const unloaded = await this.pyodide!.runPythonAsync(code);
-    const report = unloaded.__str__();
-    this.destroyToJsResult(unloaded);
-    console.log("Unloaded modules:", report);
-  }
-
   async runCode(
     code: string,
     filename: string,
   ): Promise<Output.Specific | undefined | void> {
     if (!this.pyodide)
       return console.warn("Worker has not yet been initialized");
-
-    await this.unloadLocalModules();
 
     let result = await this.pyodide
       .runPythonAsync(code, { filename })
