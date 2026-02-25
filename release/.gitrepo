@@ -4,9 +4,9 @@
 ; git-subrepo command. See https://github.com/ingydotnet/git-subrepo#readme
 ;
 [subrepo]
-	remote = https://github.com/pmalacho-mit/python-web-kernel-suede
-	branch = release
-	commit = e935b915f0841c7ec1f061a87f8597db53d78afa
-	parent = 1556066b477fcae62fbe932836665b22e4f89eac
-	method = merge
-	cmdver = 0.4.9
+remote = https://github.com/pmalacho-mit/python-web-kernel-suede
+branch = release
+commit = 7b2cf3066825f9e37b11ed8895d48a415f351ef6
+parent = 7b47c1d77206cd0c427cb4557f8e5eac491a9c3e
+method = merge
+cmdver = 0.4.9
