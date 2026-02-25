@@ -2,7 +2,7 @@ import type { Kernel } from "../worker/kernel-worker";
 import { EMFS } from "../worker/emscripten-fs";
 import { patchMatplotlib, is as image } from "./matplotlib";
 import { loadPyodide, version, type PyodideAPI } from "pyodide";
-import { form, type Output } from "../output";
+import { make, type Output } from "../output";
 
 const Char = {
   NewLine: 10,
@@ -40,14 +40,14 @@ const io = (
   const raw = (charCode: number) => {
     if (charCode === Char.NewLine) {
       console.log(acc);
-      manager.output(form("stream", "out", acc));
+      manager.output(make("stream", "out", acc));
       acc = "";
     } else acc += String.fromCharCode(charCode);
   };
 
   const batched = (output: string) => {
     console.error(output);
-    manager.output(form("stream", "err", output));
+    manager.output(make("stream", "err", output));
   };
 
   return { stdin: { stdin }, stdout: { raw }, stderr: { batched } };
@@ -160,20 +160,20 @@ export class PyodideInstance {
       if (result._repr_html_ !== undefined) {
         const html = result._repr_html_();
         this.destroyToJsResult(result);
-        return form("execute_result", "html", html);
+        return make("execute_result", "html", html);
       } else if (result._repr_latex_ !== undefined) {
         const latex = result._repr_latex_();
         this.destroyToJsResult(result);
-        return form("execute_result", "latex", latex);
+        return make("execute_result", "latex", latex);
       } else if (image(result.toJs({ dict_converter: Object.fromEntries }))) {
         const jsResult = result.toJs({ dict_converter: Object.fromEntries });
         console.log("image result", jsResult);
         result.destroy();
-        return form("display_data", "image", jsResult);
+        return make("display_data", "image", jsResult);
       } else {
         const str = result.__str__();
         this.destroyToJsResult(result);
-        return form("execute_result", "plain", str);
+        return make("execute_result", "plain", str);
       }
     } else if (result instanceof this.pyodide.ffi.PythonError) {
       const { message, type } = result;
@@ -183,8 +183,8 @@ export class PyodideInstance {
       const firstFileLine = lines.findIndex((line) => line.includes(filename))!;
       const traceback = lines.slice(firstFileLine);
       traceback.splice(0, 0, lines[0]); // Add the error type/message at the start
-      return form("error", { ename, evalue, traceback });
-    } else return form("execute_result", "plain", String(result));
+      return make("error", { ename, evalue, traceback });
+    } else return make("execute_result", "plain", String(result));
   }
 
   private proxyGlobalThis(manager: Kernel, id?: string) {
