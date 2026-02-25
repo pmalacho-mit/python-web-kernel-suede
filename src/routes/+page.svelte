@@ -1,15 +1,57 @@
 <script lang="ts">
   import { snippets, PythonKernel, type Output } from "../../release";
+  import ps2 from "./mit-6100B-ps2";
 
   const files = new Map<string, string>();
+
+  const ps2Populate = ps2.populate.bind(null, files);
 
   const kernel = new PythonKernel(
     PythonKernel.DefaultEnvironment({
       fs: PythonKernel.ReadWriteFileSystem({
         log: true,
         get: (path) => files.get(path),
-        put: (path, value) =>
-          value === null ? files.delete(path) : files.set(path, value),
+        put: (path, value) => {
+          console.log("fs.put invoked with:", { path, value });
+          if (value !== null && path.toLowerCase().endsWith(".gif")) {
+            let url: string;
+            if (value.startsWith("data:image/gif")) {
+              url = value;
+            } else {
+              let bytes: Uint8Array;
+              try {
+                const base64 = value.replace(/\s+/g, "");
+                const decoded = atob(base64);
+                bytes = Uint8Array.from(decoded, (char) => char.charCodeAt(0));
+              } catch {
+                bytes = new TextEncoder().encode(value);
+              }
+              const buffer = new ArrayBuffer(bytes.byteLength);
+              new Uint8Array(buffer).set(bytes);
+              url = URL.createObjectURL(
+                new Blob([buffer], { type: "image/gif" }),
+              );
+            }
+            for (const existing of document.querySelectorAll<HTMLImageElement>(
+              "img[data-gif-path]",
+            )) {
+              if (existing.dataset.gifPath === path) {
+                existing.remove();
+              }
+            }
+
+            const image = document.createElement("img");
+            image.src = url;
+            image.alt = path;
+            image.dataset.gifPath = path;
+            document.body.appendChild(image);
+          }
+          value === null ? files.delete(path) : files.set(path, value);
+        },
+        listDirectory: (path) => {
+          console.log("Listing directory:", path);
+          return Array.from(files.keys());
+        },
       }),
     }),
   );
@@ -69,6 +111,10 @@ with open('example.txt', 'r') as f:
     content = f.read()
 print(content)
 `,
+    "(mit 6100B ps2) ps2": ps2["ps2.py"],
+    "(mit 6100B ps2) mbta_helpers": ps2["mbta_helpers.py"],
+    "(mit 6100B ps2) test_constants": ps2["test_constants.py"],
+    "(mit 6100B ps2) test_ps2_student": ps2["test_ps2_student.py"],
   };
 
   type TestRecord<T> = Partial<Record<keyof typeof tests, T>>;
@@ -80,6 +126,10 @@ print(content)
     readfile: () => {
       files.set("example.txt", "Hello, pyodide!");
     },
+    "(mit 6100B ps2) ps2": ps2Populate,
+    "(mit 6100B ps2) mbta_helpers": ps2Populate,
+    "(mit 6100B ps2) test_constants": ps2Populate,
+    "(mit 6100B ps2) test_ps2_student": ps2Populate,
   };
 
   const verify: TestRecord<(outputs: Output.Any[]) => boolean> = {};

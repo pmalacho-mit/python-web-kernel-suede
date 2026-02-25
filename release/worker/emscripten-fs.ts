@@ -155,7 +155,7 @@ const methods = (
       logCall("nodeOps.lookup", { parent: parent.name, name });
       const path = realPath(parent, name);
       const result = custom.get({ path });
-      if (!result.ok) throw FS.genericErrors[ERRNO_CODES["ENOENT"]];
+      if (!result.ok) throw new FS.ErrnoError(ERRNO_CODES["ENOENT"]);
       return createNode!(
         parent,
         name,

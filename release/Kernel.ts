@@ -221,29 +221,34 @@ export default class PythonKernel {
   static readonly EmptyFileSystem = (
     root = PythonKernel.DefaultFileSystemRoot,
     log = false,
-  ) => ({
-    root,
-    get(opts: { path: string }) {
-      if (log) console.log("fs.get invoked with:", opts);
-      return { ok: true as const, data: null };
-    },
-    put(opts: { path: string; value: string | null }) {
-      if (log) console.log("fs.put invoked with:", opts);
-      return { ok: true as const, data: undefined };
-    },
-    delete(opts: { path: string }) {
-      if (log) console.log("fs.delete invoked with:", opts);
-      return { ok: true as const, data: undefined };
-    },
-    move(opts: { path: string; newPath: string }) {
-      if (log) console.log("fs.move invoked with:", opts);
-      return { ok: true as const, data: undefined };
-    },
-    listDirectory(opts: { path: string }) {
-      if (log) console.log("fs.listDirectory invoked with:", opts);
-      return { ok: true as const, data: [] };
-    },
-  });
+  ) =>
+    ({
+      root,
+      get(opts: { path: string }) {
+        if (log) console.log("fs.get invoked with:", opts);
+        return {
+          ok: false as const,
+          status: 404,
+          error: new Error("Not found"),
+        };
+      },
+      put(opts: { path: string; value: string | null }) {
+        if (log) console.log("fs.put invoked with:", opts);
+        return { ok: true as const, data: undefined };
+      },
+      delete(opts: { path: string }) {
+        if (log) console.log("fs.delete invoked with:", opts);
+        return { ok: true as const, data: undefined };
+      },
+      move(opts: { path: string; newPath: string }) {
+        if (log) console.log("fs.move invoked with:", opts);
+        return { ok: true as const, data: undefined };
+      },
+      listDirectory(opts: { path: string }) {
+        if (log) console.log("fs.listDirectory invoked with:", opts);
+        return { ok: true as const, data: [] };
+      },
+    }) satisfies SyncFileSystem & { root: string };
 
   static readonly SetFileSystemDefaults: (
     options: Partial<FileSystem.SanitizeOptions>,
@@ -263,16 +268,25 @@ export default class PythonKernel {
   };
 
   static readonly ReadonlyFileSystem = (
-    options: { get: FileSystem.Get } & FileSystem.CreationOptions,
+    options: FileSystem.Read & FileSystem.CreationOptions,
   ): Environment["fs"] => {
     PythonKernel.SetFileSystemDefaults(options);
-    const { get, root, log } = options;
+    const { get, listDirectory, root, log } = options;
     const fs = PythonKernel.EmptyFileSystem(root, log);
     return {
       ...fs,
+      listDirectory(opts) {
+        const data = listDirectory(
+          PythonKernel.SanitizePath(opts.path, options),
+        );
+        if (Array.isArray(data)) return { ok: true as const, data };
+        else return fs.listDirectory(opts);
+      },
       get(opts) {
         const data = get(PythonKernel.SanitizePath(opts.path, options));
         if (typeof data === "string") return { ok: true as const, data };
+        if (data && typeof data === "object" && "directory" in data)
+          return { ok: true as const, data: null };
         else return fs.get(opts);
       },
     };
@@ -294,11 +308,10 @@ export default class PythonKernel {
   };
 
   static readonly ReadWriteFileSystem = (
-    options: Parameters<typeof PythonKernel.ReadonlyFileSystem>[0] &
-      Parameters<typeof PythonKernel.WriteOnlyFileSystem>[0],
+    options: FileSystem.Read & FileSystem.Write & FileSystem.CreationOptions,
   ): Environment["fs"] => ({
-    ...PythonKernel.WriteOnlyFileSystem(options),
-    get: PythonKernel.ReadonlyFileSystem(options).get,
+    ...PythonKernel.ReadonlyFileSystem(options),
+    put: PythonKernel.WriteOnlyFileSystem(options).put,
   });
 
   static readonly DefaultEnvironment = ({
@@ -321,6 +334,14 @@ namespace FileSystem {
     log?: boolean;
   };
 
-  export type Get = (path: string) => string | undefined | null;
+  export type Get = (
+    path: string,
+  ) => string | undefined | null | { directory: true };
   export type Put = (path: string, value: string | null) => void;
+  export type ListDirectory = (path: string) => string[];
+
+  export type Read = { get: Get } & {
+    listDirectory: ListDirectory;
+  };
+  export type Write = { put: Put };
 }
