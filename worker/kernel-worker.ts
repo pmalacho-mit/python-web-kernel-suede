@@ -39,6 +39,7 @@ export namespace Kernel {
        * @example /home/pyodide/main.py
        */
       file: string;
+      unloadLocalModules?: boolean;
     };
   };
 
@@ -96,9 +97,10 @@ const handler = {
     await manager.pyodide.init(manager, data.root);
     manager.postMessage({ type: "initialized" });
   },
-  onRun: async (manager, { code, file: filename }) => {
+  onRun: async (manager, { code, file: filename, unloadLocalModules }) => {
     try {
       await manager.pyodide.load(code);
+      if (unloadLocalModules) await manager.pyodide.unloadLocalModules();
       manager.postMessage({ type: "loaded" });
       const value = await manager.pyodide.runCode(code, filename);
       if (value) manager.output(value);
