@@ -98,48 +98,6 @@ export class PyodideInstance {
     this.pyodide.registerJsModule("js", this.proxiedGlobalThis);
   }
 
-  async load(code: string): Promise<void> {
-    if (!this.pyodide) {
-      console.warn("Worker has not yet been initialized");
-      return;
-    }
-
-    // We prevent some spam, otherwise every time you run a cell with an import it will show
-    // "Loading bla", "Bla was already loaded from default channel", "Loaded bla"
-    let wasAlreadyLoaded: boolean | undefined = undefined;
-    let msgBuffer: string[] = [];
-
-    this.pyodide.setInterruptBuffer(undefined as any); // Disable interrupts while loading packages
-
-    await this.pyodide.loadPackagesFromImports(code, {
-      messageCallback: (msg) => {
-        if (wasAlreadyLoaded === true) return;
-
-        if (msg.match(/Loaded.*\smatplotlib/)) patchMatplotlib(this.pyodide!);
-
-        if (wasAlreadyLoaded === false) {
-          if (msg.match(/already loaded from default channel$/)) {
-            return; // This is not the main package being loaded but another dependency that is
-            // already loaded - no need to list it.
-          }
-          console.debug(msg);
-        }
-
-        if (wasAlreadyLoaded === undefined) {
-          if (msg.match(/already loaded from default channel$/)) {
-            wasAlreadyLoaded = true;
-            return;
-          }
-          if (msg.match(/^Loading [a-z\-, ]*/)) {
-            wasAlreadyLoaded = false;
-            msgBuffer.forEach((m) => console.debug(m));
-            console.debug(msg);
-          }
-        }
-      },
-    });
-  }
-
   async unloadLocalModules() {
     const code = `import sys
 import importlib
@@ -213,14 +171,54 @@ unload_local_modules(local_roots=("${this.root}",))
     console.log("Unloaded modules:", report);
   }
 
+  async load(code: string): Promise<void> {
+    if (!this.pyodide) {
+      console.warn("Worker has not yet been initialized");
+      return;
+    }
+
+    // We prevent some spam, otherwise every time you run a cell with an import it will show
+    // "Loading bla", "Bla was already loaded from default channel", "Loaded bla"
+    let wasAlreadyLoaded: boolean | undefined = undefined;
+    let msgBuffer: string[] = [];
+
+    this.pyodide.setInterruptBuffer(undefined as any); // Disable interrupts while loading packages
+
+    await this.pyodide.loadPackagesFromImports(code, {
+      messageCallback: (msg) => {
+        if (wasAlreadyLoaded === true) return;
+
+        if (msg.match(/Loaded.*\smatplotlib/)) patchMatplotlib(this.pyodide!);
+
+        if (wasAlreadyLoaded === false) {
+          if (msg.match(/already loaded from default channel$/)) {
+            return; // This is not the main package being loaded but another dependency that is
+            // already loaded - no need to list it.
+          }
+          console.debug(msg);
+        }
+
+        if (wasAlreadyLoaded === undefined) {
+          if (msg.match(/already loaded from default channel$/)) {
+            wasAlreadyLoaded = true;
+            return;
+          }
+          if (msg.match(/^Loading [a-z\-, ]*/)) {
+            wasAlreadyLoaded = false;
+            msgBuffer.forEach((m) => console.debug(m));
+            console.debug(msg);
+          }
+        }
+      },
+    });
+  }
+
   async runCode(
     code: string,
     filename: string,
   ): Promise<Output.Specific | undefined | void> {
     if (!this.pyodide)
       return console.warn("Worker has not yet been initialized");
-
-    await this.unloadLocalModules();
 
     let result = await this.pyodide
       .runPythonAsync(code, { filename })
