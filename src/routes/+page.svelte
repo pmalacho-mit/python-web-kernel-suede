@@ -1,14 +1,14 @@
 <script lang="ts">
-  import { snippets, PythonKernel, type Output } from "../../release";
+  import { snippets, Kernel, type Output } from "../../release";
   import ps2 from "./mit-6100B-ps2";
 
   const files = new Map<string, string>();
 
   const ps2Populate = ps2.populate.bind(null, files);
 
-  const kernel = new PythonKernel(
-    PythonKernel.DefaultEnvironment({
-      fs: PythonKernel.ReadWriteFileSystem({
+  const kernel = new Kernel(
+    Kernel.DefaultEnvironment({
+      fs: Kernel.ReadWriteFileSystem({
         log: true,
         get: (path) => files.get(path),
         put: (path, value) => {

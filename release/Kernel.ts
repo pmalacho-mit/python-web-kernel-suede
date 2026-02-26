@@ -125,9 +125,29 @@ export default class PythonKernel {
   }
 
   run(code: string, on?: Run.On): Run.Job;
-  run(request: { code: string; path?: string; on?: Run.On }): Run.Job;
+  run(request: {
+    code: string;
+    path?: string;
+    on?: Run.On;
+    /**
+     * Whether to unload local modules before executing the code.
+     *
+     * This can allow using the kernel to execute local files in a 'fresh' state without having to restart the kernel and/or reload external modules.
+     *
+     * In this way, the kernel can be used more like a traditional Python execution environment, where executing a file will re-import it and reflect changes to it and its dependencies
+     * (while still maintaining the performance benefits of using an already initialized Pyodide instance and preserving already loaded external modules).
+     */
+    unloadLocalModules?: boolean;
+  }): Run.Job;
   run(
-    arg: string | { code: string; path?: string; on?: Run.On },
+    arg:
+      | string
+      | {
+          code: string;
+          path?: string;
+          on?: Run.On;
+          unloadLocalModules?: boolean;
+        },
     on?: Run.On,
   ): Run.Job {
     const code = typeof arg === "string" ? arg : arg.code;
@@ -179,10 +199,14 @@ export default class PythonKernel {
           (resolve) => (callbacks.finished = resolve),
         );
 
+        const unloadLocalModules =
+          typeof arg === "string" ? false : arg.unloadLocalModules;
+
         worker.postMessage({
           code,
           type: "run",
           file: path,
+          unloadLocalModules,
         } satisfies Kernel.Request);
 
         await loaded;
