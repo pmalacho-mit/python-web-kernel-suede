@@ -230,7 +230,6 @@ const methods = (
 
       if (!FS.isFile(stream.object.mode)) return;
       const result = syncResult(custom.get({ path }));
-
       if (result === null) return;
       (stream as CustomStream).fileData = encoder.encode(result);
     },
