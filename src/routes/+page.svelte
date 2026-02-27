@@ -6,6 +6,7 @@
   const files = new Map<string, string>();
 
   const ps2Populate = ps2.populate.bind(null, files);
+  let gifPopupSrc = $state<string | null>(null);
 
   const kernel = new Kernel(
     Kernel.DefaultEnvironment({
@@ -14,7 +15,7 @@
         get: (path) => files.get(path),
         put: (path, value) => {
           console.log("fs.put invoked with:", { path, value });
-          if (value !== null && path.toLowerCase().endsWith(".gif")) {
+          if (value && path.toLowerCase().endsWith(".gif")) {
             let url: string;
             if (value.startsWith("data:image/gif")) {
               url = value;
@@ -30,7 +31,7 @@
               }
               url = `data:image/gif;base64,${btoa(binary)}`;
             }
-            window.open(url, "_blank", "noopener,noreferrer");
+            gifPopupSrc = url;
           }
           value === null ? files.delete(path) : files.set(path, value);
         },
@@ -245,6 +246,20 @@ print(content)
       </div>
     </section>
   </div>
+
+  {#if gifPopupSrc}
+    <div class="gif-popup-backdrop" onclick={() => (gifPopupSrc = null)}>
+      <div class="gif-popup" onclick={(event) => event.stopPropagation()}>
+        <div class="gif-popup-header">
+          <h3>GIF Preview</h3>
+          <button class="ghost" onclick={() => (gifPopupSrc = null)}
+            >Close</button
+          >
+        </div>
+        <img src={gifPopupSrc} alt="Generated GIF preview" />
+      </div>
+    </div>
+  {/if}
 </main>
 
 <style>
@@ -436,6 +451,49 @@ print(content)
     text-align: center;
     color: #6a5b4a;
     background: rgba(255, 248, 236, 0.6);
+  }
+
+  .gif-popup-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(20, 15, 12, 0.45);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 1rem;
+    z-index: 20;
+  }
+
+  .gif-popup {
+    width: min(90vw, 720px);
+    max-height: 90vh;
+    overflow: auto;
+    background: rgba(255, 255, 255, 0.96);
+    border: 1px solid rgba(98, 71, 45, 0.2);
+    border-radius: 1rem;
+    box-shadow: 0 20px 50px rgba(36, 35, 39, 0.22);
+    padding: 1rem;
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .gif-popup-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  .gif-popup-header h3 {
+    margin: 0;
+    font-size: 1rem;
+  }
+
+  .gif-popup img {
+    width: 100%;
+    height: auto;
+    border-radius: 0.75rem;
+    background: #fff;
   }
 
   @media (max-width: 900px) {
