@@ -31,6 +31,7 @@ const keys = {
   },
   display_data: {
     image: "image/png",
+    animation: "image/gif",
   },
 } as const;
 
@@ -41,10 +42,8 @@ export const is = <T extends Output.Type>(
 
 type ErrorProperties = Pick<Output.Error, "ename" | "evalue" | "traceback">;
 
-const src = (base64: string) =>
-  base64.startsWith("data:image/png;base64,")
-    ? base64
-    : `data:image/png;base64,${base64}`;
+const src = (type: string, base64: string) =>
+  base64.startsWith("data:image/") ? base64 : `data:${type};base64,${base64}`;
 
 export function accessor(output: Output.Error): ErrorProperties;
 export function accessor(
@@ -91,8 +90,10 @@ export function accessor(
   else if (is(output, "display_data"))
     return {
       get image() {
-        const base64 = get(keys.display_data.image);
-        return base64 ? src(base64) : undefined;
+        const animation = get(keys.display_data.animation);
+        if (animation) return src(keys.display_data.animation, animation);
+        const image = get(keys.display_data.image);
+        return image ? src(keys.display_data.image, image) : undefined;
       },
     };
 
@@ -148,12 +149,15 @@ export function make(
         data: { [key]: value },
       };
     case "display_data":
-      // only image supported for now
-      const { width, height, base64 } = third as Payload;
+      const { width, height, base64, format } = third as Payload;
+      const mimeType =
+        format === "gif"
+          ? keys.display_data.animation
+          : keys.display_data.image;
       return {
         output_type: "display_data",
         metadata: { width, height },
-        data: { [keys.display_data.image]: src(base64) },
+        data: { [mimeType]: src(mimeType, base64) },
       };
     case "error":
       const { ename, evalue, traceback } = second as ErrorProperties;
