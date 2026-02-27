@@ -1,6 +1,7 @@
 <script lang="ts">
   import { snippets, Kernel, type Output } from "../../release";
   import ps2 from "./mit-6100B-ps2";
+  import simpleAnimation from "./simple-animation/main.py?raw";
 
   const files = new Map<string, string>();
 
@@ -18,33 +19,18 @@
             if (value.startsWith("data:image/gif")) {
               url = value;
             } else {
-              let bytes: Uint8Array;
-              try {
-                const base64 = value.replace(/\s+/g, "");
-                const decoded = atob(base64);
-                bytes = Uint8Array.from(decoded, (char) => char.charCodeAt(0));
-              } catch {
-                bytes = new TextEncoder().encode(value);
-              }
-              const buffer = new ArrayBuffer(bytes.byteLength);
-              new Uint8Array(buffer).set(bytes);
-              url = URL.createObjectURL(
-                new Blob([buffer], { type: "image/gif" }),
+              const bytes = Uint8Array.from(value, (char) =>
+                char.charCodeAt(0),
               );
-            }
-            for (const existing of document.querySelectorAll<HTMLImageElement>(
-              "img[data-gif-path]",
-            )) {
-              if (existing.dataset.gifPath === path) {
-                existing.remove();
+              const chunkSize = 0x8000;
+              let binary = "";
+              for (let i = 0; i < bytes.length; i += chunkSize) {
+                const chunk = bytes.subarray(i, i + chunkSize);
+                binary += String.fromCharCode(...chunk);
               }
+              url = `data:image/gif;base64,${btoa(binary)}`;
             }
-
-            const image = document.createElement("img");
-            image.src = url;
-            image.alt = path;
-            image.dataset.gifPath = path;
-            document.body.appendChild(image);
+            window.open(url, "_blank", "noopener,noreferrer");
           }
           value === null ? files.delete(path) : files.set(path, value);
         },
@@ -79,6 +65,43 @@ df = pd.DataFrame({
 })
 df
 `,
+    animation: simpleAnimation,
+    animation2: `import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+import random
+from itertools import count
+import pandas as pd
+import numpy as np
+
+fig, ax = plt.subplots()
+t = np.linspace(0, 3, 40)
+g = -9.81
+v0 = 12
+z = g * t**2 / 2 + v0 * t
+
+v02 = 5
+z2 = g * t**2 / 2 + v02 * t
+
+scat = ax.scatter(t[0], z[0], c="b", s=5, label=f'v0 = {v0} m/s')
+line2 = ax.plot(t[0], z2[0], label=f'v0 = {v02} m/s')[0]
+ax.set(xlim=[0, 3], ylim=[-4, 10], xlabel='Time [s]', ylabel='Z [m]')
+ax.legend()
+
+
+def update(frame):
+    # for each frame, update the data stored on each artist.
+    x = t[:frame]
+    y = z[:frame]
+    # update the scatter plot:
+    data = np.stack([x, y]).T
+    scat.set_offsets(data)
+    # update the line plot:
+    line2.set_xdata(t[:frame])
+    line2.set_ydata(z2[:frame])
+    return (scat, line2)
+
+ani = FuncAnimation(fig=fig, func=update, frames=40, interval=30)
+plt.show()`,
     latex: `
 # import symbolic capability to Python
 from sympy import *
