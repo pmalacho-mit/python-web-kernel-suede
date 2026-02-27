@@ -90,8 +90,32 @@ const DIR_MODE = 16895; // 040777
 const FILE_MODE = 33206; // 100666
 const SEEK_CUR = 1;
 const SEEK_END = 2;
-const encoder = new TextEncoder();
-const decoder = new TextDecoder("utf-8");
+const O_TRUNC = 512;
+
+const bytesToBinaryString = (bytes: Uint8Array) => {
+  if (bytes.length === 0) return "";
+
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return binary;
+};
+
+const binaryStringToBytes = (value: string) => {
+  const bytes = new Uint8Array(value.length);
+  for (let i = 0; i < value.length; i++) {
+    bytes[i] = value.charCodeAt(i) & 0xff;
+  }
+  return bytes;
+};
+
+const resizeBinaryString = (value: string, nextSize: number) => {
+  if (nextSize <= value.length) return value.slice(0, nextSize);
+  return value + "\x00".repeat(nextSize - value.length);
+};
 
 const methods = (
   {
@@ -125,6 +149,13 @@ const methods = (
     getattr: (node) => {
       logCall("nodeOps.getattr", { node: node.name, id: node.id });
       const { id: ino, mode, rdev } = node;
+      const path = realPath(node);
+      const size = FS.isFile(mode)
+        ? (() => {
+            const result = syncResult(custom.get({ path }));
+            return result === null ? 0 : result.length;
+          })()
+        : 0;
       const time = new Date(isCustomNode(node) ? node.timestamp! : Date.now());
       return {
         dev,
@@ -134,7 +165,7 @@ const methods = (
         nlink: 1,
         uid: 0,
         gid: 0,
-        size: 0,
+        size,
         atime: time,
         mtime: time,
         ctime: time,
@@ -147,6 +178,17 @@ const methods = (
       logCall("nodeOps.setattr", { node: node.name, attr });
       if (!attr) return;
       if (attr.mode !== undefined) node.mode = attr.mode;
+      if (attr.size !== undefined) {
+        if (!FS.isFile(node.mode))
+          throw new FS.ErrnoError(ERRNO_CODES["EINVAL"]);
+
+        const path = realPath(node);
+        const result = syncResult(custom.get({ path }));
+        const data = result === null ? "" : result;
+        syncResult(
+          custom.put({ path, value: resizeBinaryString(data, attr.size) }),
+        );
+      }
       if (attr.timestamp !== undefined)
         (node as any).timestamp = attr.timestamp;
     },
@@ -226,18 +268,21 @@ const methods = (
   const streamOps: FS.StreamOps = {
     open: (stream) => {
       const path = realPath(stream.object);
-      logCall("streamOps.open", { path });
+      logCall("streamOps.open", { path, stream });
 
       if (!FS.isFile(stream.object.mode)) return;
       const result = syncResult(custom.get({ path }));
       if (result === null) return;
-      (stream as CustomStream).fileData = encoder.encode(result);
+      const shouldTruncate = (stream.flags & O_TRUNC) === O_TRUNC;
+      (stream as CustomStream).fileData = shouldTruncate
+        ? new Uint8Array()
+        : binaryStringToBytes(result);
     },
     close: (stream) => {
       const path = realPath(stream.object);
       logCall("streamOps.close", { path });
       if (!FS.isFile(stream.object.mode) || !isCustomStream(stream)) return;
-      const value = decoder.decode(stream.fileData);
+      const value = bytesToBinaryString(stream.fileData!);
       stream.fileData = undefined;
       syncResult(custom.put({ path, value }));
     },
@@ -363,7 +408,7 @@ export class EMFS implements Emscripten.FileSystemType {
   constructor(
     pyodide: PyodideAPI,
     custom: SyncFileSystem,
-    log: boolean = false,
+    log: boolean = true,
   ) {
     this.FS = pyodide.FS;
     this.methods = methods(
