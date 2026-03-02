@@ -408,7 +408,7 @@ export class EMFS implements Emscripten.FileSystemType {
   constructor(
     pyodide: PyodideAPI,
     custom: SyncFileSystem,
-    log: boolean = true,
+    log: boolean = false,
   ) {
     this.FS = pyodide.FS;
     this.methods = methods(
