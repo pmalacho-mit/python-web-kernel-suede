@@ -9,7 +9,7 @@
   let gifPopupSrc = $state<string | null>(null);
 
   const kernel = new Kernel(
-    Kernel.DefaultEnvironment({
+    Kernel.Environment({
       fs: Kernel.ReadWriteFileSystem({
         log: true,
         get: (path) => files.get(path),

@@ -1,6 +1,6 @@
 import type { Expand } from "./utils";
 import type { MultilineString, IOutput } from "@jupyterlab/nbformat";
-import type { RenderPayload } from "./pyodide/modules";
+import type { ImagePayload } from "./pyodide/modules";
 import { renderToString } from "katex";
 
 export namespace Output {
@@ -113,13 +113,13 @@ export function make(
 export function make(
   output: "display_data",
   type: keyof typeof keys.display_data,
-  payload: RenderPayload,
+  payload: ImagePayload,
 ): Output.DisplayData;
 export function make(output: "error", payload: ErrorProperties): Output.Error;
 export function make(
   output: Output.Type,
   second: string | ErrorProperties,
-  third?: MultilineString | RenderPayload,
+  third?: MultilineString | ImagePayload,
 ): Output.Specific {
   switch (output) {
     case "stream":
@@ -149,7 +149,7 @@ export function make(
         data: { [key]: value },
       };
     case "display_data":
-      const { width, height, base64, format } = third as RenderPayload;
+      const { width, height, base64, format } = third as ImagePayload;
       const mimeType =
         format === "gif"
           ? keys.display_data.animation

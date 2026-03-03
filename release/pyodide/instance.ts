@@ -1,6 +1,6 @@
 import type { Kernel } from "../worker/kernel-worker";
 import { EMFS } from "../worker/emscripten-fs";
-import { patchMatplotlib, is as image, unloadLocalModules } from "./modules";
+import { patchMatplotlib, unloadLocalModules, asImage } from "./modules";
 import { loadPyodide, version, type PyodideAPI } from "pyodide";
 import { make, type Output } from "../output";
 
@@ -84,7 +84,9 @@ export class PyodideInstance {
     this.pyodide.setStdout(stdout);
     this.pyodide.setStderr(stderr);
 
-    await patchMatplotlib(this.pyodide);
+    await patchMatplotlib(this.pyodide, (payload) =>
+      manager.output(make("display_data", "image", payload)),
+    );
 
     this.pyodide.setInterruptBuffer(this.interruptBuffer);
 
@@ -106,10 +108,8 @@ export class PyodideInstance {
   }
 
   async load(code: string): Promise<void> {
-    if (!this.pyodide) {
-      console.warn("Worker has not yet been initialized");
-      return;
-    }
+    if (!this.pyodide)
+      return console.warn("Worker has not yet been initialized");
 
     // We prevent some spam, otherwise every time you run a cell with an import it will show
     // "Loading bla", "Bla was already loaded from default channel", "Loaded bla"
@@ -122,13 +122,8 @@ export class PyodideInstance {
       messageCallback: (msg) => {
         if (wasAlreadyLoaded === true) return;
 
-        if (msg.match(/Loaded.*\smatplotlib/)) patchMatplotlib(this.pyodide!);
-
         if (wasAlreadyLoaded === false) {
-          if (msg.match(/already loaded from default channel$/)) {
-            return; // This is not the main package being loaded but another dependency that is
-            // already loaded - no need to list it.
-          }
+          if (msg.match(/already loaded from default channel$/)) return; // This is not the main package being loaded but another dependency that is already loaded - no need to list it.
           console.debug(msg);
         }
 
@@ -147,7 +142,7 @@ export class PyodideInstance {
     });
   }
 
-  async runCode(
+  async run(
     code: string,
     filename: string,
   ): Promise<Output.Specific | undefined | void> {
@@ -168,15 +163,14 @@ export class PyodideInstance {
         const latex = result._repr_latex_();
         this.destroyToJsResult(result);
         return make("execute_result", "latex", latex);
-      } else if (image(result.toJs({ dict_converter: Object.fromEntries }))) {
-        const jsResult = result.toJs({ dict_converter: Object.fromEntries });
-        console.log("image result", jsResult);
-        result.destroy();
-        return make("display_data", "image", jsResult);
       } else {
-        const str = result.__str__();
-        this.destroyToJsResult(result);
-        return make("execute_result", "plain", str);
+        const image = asImage(result);
+        if (image) return make("display_data", "image", image);
+        else {
+          const str = result.__str__();
+          this.destroyToJsResult(result);
+          return make("execute_result", "plain", str);
+        }
       }
     } else if (result instanceof this.pyodide.ffi.PythonError) {
       const { message, type } = result;
