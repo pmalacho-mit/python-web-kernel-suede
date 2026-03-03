@@ -1,6 +1,6 @@
 import type { Kernel } from "../worker/kernel-worker";
 import { EMFS } from "../worker/emscripten-fs";
-import { patchMatplotlib, is as image } from "./matplotlib";
+import { patchMatplotlib, unloadLocalModules, asImage } from "./modules";
 import { loadPyodide, version, type PyodideAPI } from "pyodide";
 import { make, type Output } from "../output";
 
@@ -84,7 +84,9 @@ export class PyodideInstance {
     this.pyodide.setStdout(stdout);
     this.pyodide.setStderr(stderr);
 
-    await patchMatplotlib(this.pyodide);
+    await patchMatplotlib(this.pyodide, (payload) =>
+      manager.output(make("display_data", "image", payload)),
+    );
 
     this.pyodide.setInterruptBuffer(this.interruptBuffer);
 
@@ -99,83 +101,15 @@ export class PyodideInstance {
   }
 
   async unloadLocalModules() {
-    const code = `import sys
-import importlib
-from pathlib import PurePosixPath
-
-def _module_paths(mod):
-    """Return possible filesystem paths a module/package lives at."""
-    spec = getattr(mod, "__spec__", None)
-    out = set()
-
-    # Normal modules/packages
-    f = getattr(mod, "__file__", None)
-    if f:
-        out.add(str(PurePosixPath(f)))
-
-    # importlib metadata
-    if spec is not None:
-        origin = getattr(spec, "origin", None)
-        if origin and origin not in ("built-in", "frozen"):
-            out.add(str(PurePosixPath(origin)))
-
-        # Namespace packages / packages: list of directories
-        locs = getattr(spec, "submodule_search_locations", None)
-        if locs:
-            for p in locs:
-                out.add(str(PurePosixPath(p)))
-
-    return out
-
-def unload_local_modules(
-    local_roots=("/home/pyodide",),   # add your project root(s) here
-    external_roots=("/lib/python", "/usr/lib", "/usr/local/lib"),
-    extra_keep=(),
-):
-    """
-    Remove modules considered 'local' from sys.modules.
-    Heuristic: module path is under a local_root and NOT under any external_root.
-    """
-    local_roots = tuple(str(PurePosixPath(p)) for p in local_roots)
-    external_roots = tuple(str(PurePosixPath(p)) for p in external_roots)
-    keep = set(extra_keep)
-
-    to_delete = []
-    for name, mod in list(sys.modules.items()):
-        if mod is None or name in keep:
-            continue
-
-        paths = _module_paths(mod)
-        if not paths:
-            continue  # built-in/frozen/no-file modules -> skip
-
-        # "local" if any path is inside local_roots, and none are inside external_roots
-        is_under_local = any(any(p.startswith(r.rstrip("/") + "/") or p == r for r in local_roots) for p in paths)
-        is_under_external = any(any(p.startswith(r.rstrip("/") + "/") or p == r for r in external_roots) for p in paths)
-
-        if is_under_local and not is_under_external:
-            to_delete.append(name)
-
-    for name in to_delete:
-        sys.modules.pop(name, None)
-
-    importlib.invalidate_caches()
-    return to_delete;
-    
-unload_local_modules(local_roots=("${this.root}",))
-`;
-
-    const unloaded = await this.pyodide!.runPythonAsync(code);
-    const report = unloaded.__str__();
-    this.destroyToJsResult(unloaded);
-    console.log("Unloaded modules:", report);
+    console.log(
+      "Unloaded modules:",
+      await unloadLocalModules(this.pyodide!, this.root!),
+    );
   }
 
   async load(code: string): Promise<void> {
-    if (!this.pyodide) {
-      console.warn("Worker has not yet been initialized");
-      return;
-    }
+    if (!this.pyodide)
+      return console.warn("Worker has not yet been initialized");
 
     // We prevent some spam, otherwise every time you run a cell with an import it will show
     // "Loading bla", "Bla was already loaded from default channel", "Loaded bla"
@@ -188,13 +122,8 @@ unload_local_modules(local_roots=("${this.root}",))
       messageCallback: (msg) => {
         if (wasAlreadyLoaded === true) return;
 
-        if (msg.match(/Loaded.*\smatplotlib/)) patchMatplotlib(this.pyodide!);
-
         if (wasAlreadyLoaded === false) {
-          if (msg.match(/already loaded from default channel$/)) {
-            return; // This is not the main package being loaded but another dependency that is
-            // already loaded - no need to list it.
-          }
+          if (msg.match(/already loaded from default channel$/)) return; // This is not the main package being loaded but another dependency that is already loaded - no need to list it.
           console.debug(msg);
         }
 
@@ -213,7 +142,7 @@ unload_local_modules(local_roots=("${this.root}",))
     });
   }
 
-  async runCode(
+  async run(
     code: string,
     filename: string,
   ): Promise<Output.Specific | undefined | void> {
@@ -234,15 +163,14 @@ unload_local_modules(local_roots=("${this.root}",))
         const latex = result._repr_latex_();
         this.destroyToJsResult(result);
         return make("execute_result", "latex", latex);
-      } else if (image(result.toJs({ dict_converter: Object.fromEntries }))) {
-        const jsResult = result.toJs({ dict_converter: Object.fromEntries });
-        console.log("image result", jsResult);
-        result.destroy();
-        return make("display_data", "image", jsResult);
       } else {
-        const str = result.__str__();
-        this.destroyToJsResult(result);
-        return make("execute_result", "plain", str);
+        const image = asImage(result);
+        if (image) return make("display_data", "image", image);
+        else {
+          const str = result.__str__();
+          this.destroyToJsResult(result);
+          return make("execute_result", "plain", str);
+        }
       }
     } else if (result instanceof this.pyodide.ffi.PythonError) {
       const { message, type } = result;

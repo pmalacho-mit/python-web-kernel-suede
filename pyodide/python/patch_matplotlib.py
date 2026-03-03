@@ -1,73 +1,25 @@
-import type { PyodideAPI } from "pyodide";
+import base64
+import io
+from PIL import Image
 
-export type Payload = {
-  base64: string;
-  format: "png" | "gif";
-  width: number;
-  height: number;
-};
-
-export const is = (query: any): query is Payload =>
-  typeof query === "object" &&
-  query !== null &&
-  typeof query.base64 === "string" &&
-  typeof query.width === "number" &&
-  typeof query.height === "number";
-
-/**
- * Matplotlib currently creates a dom element which never gets attached to the DOM.
- * Without a way to specify our own DOM node creation function, we override it here - saving us from shipping our own matplotlib package.
- */
-export async function patchMatplotlib(pyodide: PyodideAPI) {
-  // Switch to simpler matplotlib backend https://github.com/jupyterlite/jupyterlite/blob/main/packages/pyolite-kernel/py/pyolite/pyolite/patches.py
-
-  await pyodide.loadPackage("ipython");
-  await pyodide.loadPackage("matplotlib_inline");
-  await pyodide.loadPackage("matplotlib");
-
-  //   await pyodide.runPythonAsync(`
-  // import matplotlib
-  // matplotlib.use('module://matplotlib_inline.backend_inline')
-  // import matplotlib.pyplot
-
-  // old_show = matplotlib.pyplot.show
-
-  // import base64
-  // import io
-
-  // def show():
-  //   #fig = matplotlib.pyplot.gcf()
-  //   #buf = io.BytesIO()
-  //   #fig.savefig(buf, format='png')
-  //   #png_data = base64.b64encode(buf.getvalue()).decode('utf-8')
-  //   #result = { '${"base64" satisfies keyof Payload}': png_data, '${"width" satisfies keyof Payload}': fig.get_size_inches()[0] * fig.dpi, '${"height" satisfies keyof Payload}': fig.get_size_inches()[1] * fig.dpi }
-  //   #matplotlib.pyplot.close(fig)
-  //   old_show()
-  //   #return result
-
-  // matplotlib.pyplot.show = show
-  // `);
-
-  await pyodide.runPythonAsync(z);
-}
-
-const z = `
 import matplotlib
 matplotlib.use('Agg')
 
-
 from matplotlib import pyplot as plt
 import matplotlib.animation as animation
+
 global FuncAnimation
 FuncAnimation = animation.FuncAnimation
 
-import base64
-import io
-from PIL import Image  # Import Pillow for manual GIF creation
-
 _animation_ref = None
 
-### DO NOT MODIFY
+def _emit_to_js(payload):
+    emit = globals().get('__python_web_kernel_emit_matplotlib', None)
+    if emit is None:
+        return False
+    emit(payload)
+    return True
+
 def ensure_matplotlib_patch():
     global FuncAnimation
     _old_show = plt.show
@@ -119,19 +71,29 @@ def ensure_matplotlib_patch():
             gif_buf = io.BytesIO()
             frames[0].save(fp=gif_buf, format='GIF', save_all=True, append_images=frames[1:], loop=0)
             gif_buf.seek(0)
-            img = base64.b64encode(gif_buf.read()).decode('utf-8')
+            data = base64.b64encode(gif_buf.read()).decode('utf-8')
             width, height = frames[0].size
         else:
             fig.savefig(buf, format='png')
             buf.seek(0)
             # encode to a base64 str
-            img = base64.b64encode(buf.read()).decode('utf-8')
+            data = base64.b64encode(buf.read()).decode('utf-8')
             width, height = fig.get_size_inches() * fig.dpi
             width, height = int(width), int(height)
         plt.close(fig)
-        return { '${"base64" satisfies keyof Payload}': img, '${"width" satisfies keyof Payload}': width, '${"height" satisfies keyof Payload}': height, '${"format" satisfies keyof Payload}': outformat }
+        payload = {
+            'base64': data,
+            'width': width,
+            'height': height,
+            'format': outformat,
+        }
+        _animation_ref = None
+
+        if _emit_to_js(payload):
+            return None
+
+        return payload
 
     plt.show = show
 
 ensure_matplotlib_patch()
-`;

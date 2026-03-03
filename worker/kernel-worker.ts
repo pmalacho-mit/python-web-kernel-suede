@@ -41,6 +41,9 @@ export namespace Kernel {
       file: string;
       unloadLocalModules?: boolean;
     };
+    load: {
+      code: string;
+    };
   };
 
   export type Responses = {
@@ -98,11 +101,13 @@ const handler = {
     manager.postMessage({ type: "initialized" });
   },
   onRun: async (manager, { code, file: filename, unloadLocalModules }) => {
+    let loaded = false;
     try {
       await manager.pyodide.load(code);
       if (unloadLocalModules) await manager.pyodide.unloadLocalModules();
+      loaded = true;
       manager.postMessage({ type: "loaded" });
-      const value = await manager.pyodide.runCode(code, filename);
+      const value = await manager.pyodide.run(code, filename);
       if (value) manager.output(value);
     } catch (e) {
       manager.output(
@@ -113,7 +118,23 @@ const handler = {
         }),
       );
     } finally {
+      if (!loaded) manager.postMessage({ type: "loaded" });
       manager.postMessage({ type: "finished" });
+    }
+  },
+  onLoad: async (manager, { code }) => {
+    try {
+      await manager.pyodide.load(code);
+    } catch (e) {
+      manager.output(
+        make("error", {
+          ename: "LoadError",
+          evalue: (e as Error).message,
+          traceback: (e as Error).stack ? (e as Error).stack!.split("\n") : [],
+        }),
+      );
+    } finally {
+      manager.postMessage({ type: "loaded" });
     }
   },
 } satisfies Kernel.RequestHandler;
