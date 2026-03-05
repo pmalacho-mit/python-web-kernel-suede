@@ -4,9 +4,12 @@ import tailwindcss from "@tailwindcss/vite";
 import { applyConfig as applyReleaseConfig } from "./release/config/vite";
 import { applyConfig as applyMonacoConfig } from "./src/suede/python-monaco-suede/config/vite";
 
+const base = process.env.BASE_PATH ?? "";
+
 export default applyReleaseConfig(
   applyMonacoConfig(
     defineConfig({
+      base,
       plugins: [tailwindcss(), sveltekit()],
       test: {
         expect: { requireAssertions: true },

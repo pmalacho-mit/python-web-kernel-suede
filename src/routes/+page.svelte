@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { base } from "$app/paths";
+
   export const routes = Object.keys(
     import.meta.glob("/src/routes/**/+page.svelte"),
   ).map(
@@ -16,7 +18,7 @@
     {#each routes as route}
       <li>
         <a
-          href={route}
+          href={route === "/" ? `${base}/` : `${base}${route}`}
           class="group flex items-center justify-between rounded-lg border border-slate-200 bg-white px-4 py-3 text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900"
         >
           <span class="font-medium">{route}</span>

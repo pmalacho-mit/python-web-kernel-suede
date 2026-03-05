@@ -25,7 +25,8 @@ export const applyConfig = (current, options = {}) => {
   current.server.fs.allow ??= [];
   current.server.fs.allow.push(suederoot);
   current.define ??= {};
-  current.define["PYTHON_MONACO_BASE"] = options?.base ?? current.base ?? `"/"`;
+  current.define["PYTHON_MONACO_BASE"] =
+    `"${options?.base ?? current.base ?? `/`}"`;
   current.plugins ??= [];
 
   const node_modules = findNearestNodeModules(suederoot);

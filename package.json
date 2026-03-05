@@ -6,6 +6,10 @@
 	"scripts": {
 		"dev": "vite dev",
 		"build": "vite build",
+		"build:pages": "BASE_PATH=/python-web-kernel-suede npm run build",
+		"clean:pages": "find .worktrees/gh-pages -mindepth 1 ! -name .git ! -name .nojekyll -print -exec rm -rf {} +",
+		"mv:pages": " mv build/* .worktrees/gh-pages/",
+		"pages": "npm run build:pages && npm run clean:pages && npm run mv:pages && git -C .worktrees/gh-pages add . && git -C .worktrees/gh-pages commit -m 'Update pages' && git -C .worktrees/gh-pages push",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
