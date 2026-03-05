@@ -398,5 +398,3 @@ if __name__ == "__main__":
     ani = produce_animation(p_histories[0], p_track)
     ani.save("animation.gif", writer="pillow", fps=frame_rate)
     print("done")
-
-

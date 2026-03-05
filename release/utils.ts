@@ -64,3 +64,15 @@ export const join = (...parts: (string | undefined | null)[]): string =>
     .filter((part) => part !== undefined && part !== null)
     .map((part) => part!.replace(/(^\/+|\/+$)/g, ""))
     .join("/");
+
+export const toBase64 = (value: string) => {
+  if (!value) return "";
+  const bytes = Uint8Array.from(value, (character) => character.charCodeAt(0));
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+};

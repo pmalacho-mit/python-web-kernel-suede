@@ -128,7 +128,7 @@ const methods = (
   let createNode: AdvancedEmscriptenFS["createNode"];
 
   const dev = 1; // dummy device number
-  const rdev = 1; // dummy device number for rdev
+  const rdev = 1; // dummy device number
 
   const syncResult = convertSyncResult.bind(null, FS, ERRNO_CODES) as <T, E>(
     result: SyncResult<T, E>,

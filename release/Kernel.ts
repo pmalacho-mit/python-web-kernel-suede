@@ -5,11 +5,21 @@ import { AsyncMemory } from "./worker/async-memory";
 import { ObjectProxyHost } from "./worker/object-proxy";
 import type { Kernel } from "./worker/kernel-worker";
 import type { SyncFileSystem } from "./worker/emscripten-fs";
-import { flatPromise, type Expand } from "./utils";
+import { flatPromise, toBase64, type Expand } from "./utils";
 import { type Output, make } from "./output";
+import fs from "./fs";
 
 export type Environment = {
-  fs: SyncFileSystem & { root: string };
+  /**
+   * Synchronous filesystem bridge exposed to the Python worker, including its mount root.
+   */
+  fs: SyncFileSystem & {
+    /**
+     * The root path that the filesystem is mounted at in the Python environment.
+     */
+    root: string;
+  };
+  /** Prompt handler used when Python requests user input. */
   input: (prompt: string) => string;
 };
 
@@ -32,13 +42,16 @@ export namespace Run {
   }>;
 }
 
+/** Resolve a path relative to the configured filesystem root. */
 const fromRoot = ({ fs: { root } }: Environment, path: string) =>
   root.endsWith("/")
     ? root + path.replace(/^\/+/, "")
     : root + "/" + path.replace(/^\/+/, "");
 
+/** Default filename used when code is executed without an explicit path. */
 const defaultPath = (env: Environment) => fromRoot(env, "temp.py");
 
+/** Attach worker message handling for proxy traffic and kernel lifecycle events. */
 const handleMessages = ({
   worker,
   objectProxyHost,
@@ -78,8 +91,30 @@ export default class PythonKernel {
 
   readonly ready: Promise<void>;
 
-  private runChain = Promise.resolve();
+  private operationChain = Promise.resolve();
 
+  /**
+   * Reserve a turn in the serialized operation queue and return both the
+   * previous operation and the completion handle for this operation.
+   */
+  private queueOperation() {
+    const done = flatPromise<void>();
+    const previous = this.operationChain.catch((_) => 0);
+    this.operationChain = done.promise;
+    return { previous, done };
+  }
+
+  /** Wait for a one-shot worker lifecycle signal. */
+  private signal(signal: "loaded" | "finished") {
+    return new Promise<void>((resolve) => (this.callbacks[signal] = resolve));
+  }
+
+  /** Post a typed kernel request to the worker. */
+  private post<T extends keyof Kernel.Requests>(request: Kernel.Request<T>) {
+    this.worker.postMessage(request);
+  }
+
+  /** Create a kernel instance and initialize worker wiring. */
   constructor(environment: Environment) {
     this.environment = environment;
     const { fs, input } = environment;
@@ -112,19 +147,48 @@ export default class PythonKernel {
         }
       };
       worker.addEventListener("message", onInitialized);
-      worker.postMessage(payload);
+      this.post(payload);
     });
   }
 
+  /** Interrupt the currently executing Python code, if any. */
   interrupt() {
     this.asyncMemory.interrupt();
   }
 
+  /** Clear the interrupt flag before a new operation starts. */
   clearInterrupt() {
     this.asyncMemory.clearInterrupt();
   }
 
+  /**
+   * Optimistically preload Python package dependencies for the provided code.
+   *
+   * This only resolves imports; it does not execute the code body.
+   */
+  load(code: string): Promise<void> {
+    const { previous, done } = this.queueOperation();
+    return new Promise<void>(async (resolve) => {
+      try {
+        await this.ready;
+        await previous;
+        const loaded = this.signal("loaded");
+        this.post({ type: "load", code });
+        await loaded;
+      } finally {
+        done.resolve();
+        resolve();
+      }
+    });
+  }
+
+  /**
+   * Execute Python code, optionally with lifecycle and output callbacks.
+   */
   run(code: string, on?: Run.On): Run.Job;
+  /**
+   * Execute Python code with optional path override and module unload behavior.
+   */
   run(request: {
     code: string;
     path?: string;
@@ -139,6 +203,7 @@ export default class PythonKernel {
      */
     unloadLocalModules?: boolean;
   }): Run.Job;
+  /** Run request implementation shared by both overload signatures. */
   run(
     arg:
       | string
@@ -159,12 +224,7 @@ export default class PythonKernel {
         : (fromRoot(this.environment, arg.path ?? "temp.py") ??
           defaultPath(this.environment));
 
-    const { worker, ready, runChain, callbacks } = this;
-
-    const done = flatPromise();
-
-    const alreadyRunning = runChain.catch((_) => 0);
-    this.runChain = done.promise;
+    const { previous, done } = this.queueOperation();
 
     let executing = false;
     let doExecute = true;
@@ -179,35 +239,29 @@ export default class PythonKernel {
     const result = new Promise<Output.Specific[]>(async (resolve) => {
       const outputs = new Array<Output.Specific>();
       try {
-        await ready;
-        await alreadyRunning;
+        await this.ready;
+        await previous;
 
         if (!doExecute) return resolve(outputs);
 
-        callbacks.output = (output) => {
+        this.callbacks.output = (output) => {
           outputs.push(output);
           on?.output?.(output);
         };
 
         this.clearInterrupt();
         on?.start?.();
-        const loaded = new Promise<void>(
-          (resolve) => (callbacks.loaded = resolve),
-        );
 
-        const finished = new Promise<void>(
-          (resolve) => (callbacks.finished = resolve),
-        );
+        const loaded = this.signal("loaded");
+        const finished = this.signal("finished");
 
-        const unloadLocalModules =
-          typeof arg === "string" ? false : arg.unloadLocalModules;
-
-        worker.postMessage({
-          code,
+        this.post({
           type: "run",
+          code,
           file: path,
-          unloadLocalModules,
-        } satisfies Kernel.Request);
+          unloadLocalModules:
+            typeof arg === "string" ? false : arg.unloadLocalModules,
+        } satisfies Kernel.Request<"run">);
 
         await loaded;
         if (!doExecute) return resolve(outputs);
@@ -215,7 +269,7 @@ export default class PythonKernel {
 
         executing = true;
       } catch (e: any) {
-        callbacks.output?.(
+        this.callbacks.output?.(
           make("error", {
             ename: e.name,
             evalue: e.message,
@@ -232,140 +286,75 @@ export default class PythonKernel {
     return { interrupt, result };
   }
 
+  /** Terminate worker resources and shared memory handles. */
   dispose() {
     this.worker.terminate();
     this.asyncMemory.dispose();
   }
 
-  static readonly DefaultFileSystemRoot = "/home/pyodide";
+  assetURL(request: { path: string }): string | null;
+  assetURL(request: { value: string; path: string }): string | null;
+  assetURL(request: { value: string; mimeType: string }): string | null;
+  assetURL(request: { path: string } | { value: string; mimeType: string }) {
+    if ("value" in request) return PythonKernel.AssetUrl(request);
+    else {
+      const value = this.environment.fs.get(request);
+      const { path } = request;
+      if (typeof value !== "string") {
+        console.warn(`Asset at path "${path}" not found or is a directory`);
+        return null;
+      }
+      const mimeType = fs.inferMimeType(path);
+      return PythonKernel.AssetUrl({ value, mimeType });
+    }
+  }
 
+  static readonly DefaultFileSystemRoot = fs.defaultRoot;
+
+  /** Default prompt implementation used by the kernel environment. */
   static readonly DefaultInput = (prompt: string) =>
     window.prompt(prompt) ?? "";
 
-  static readonly EmptyFileSystem = (
-    root = PythonKernel.DefaultFileSystemRoot,
-    log = false,
-  ) =>
-    ({
-      root,
-      get(opts: { path: string }) {
-        if (log) console.log("fs.get invoked with:", opts);
-        return {
-          ok: false as const,
-          status: 404,
-          error: new Error("Not found"),
-        };
-      },
-      put(opts: { path: string; value: string | null }) {
-        if (log) console.log("fs.put invoked with:", opts);
-        return { ok: true as const, data: undefined };
-      },
-      delete(opts: { path: string }) {
-        if (log) console.log("fs.delete invoked with:", opts);
-        return { ok: true as const, data: undefined };
-      },
-      move(opts: { path: string; newPath: string }) {
-        if (log) console.log("fs.move invoked with:", opts);
-        return { ok: true as const, data: undefined };
-      },
-      listDirectory(opts: { path: string }) {
-        if (log) console.log("fs.listDirectory invoked with:", opts);
-        return { ok: true as const, data: [] };
-      },
-    }) satisfies SyncFileSystem & { root: string };
+  /**
+   * In-memory filesystem adapter that returns not-found for reads and no-ops
+   * for writes.
+   */
+  static readonly EmptyFileSystem = fs.empty;
 
-  static readonly SetFileSystemDefaults: (
-    options: Partial<FileSystem.SanitizeOptions>,
-  ) => asserts options is FileSystem.SanitizeOptions = (options) => {
-    options.root ??= PythonKernel.DefaultFileSystemRoot;
-    options.removeRoot ??= true;
-    options.removeLeadingSlash ??= true;
-  };
+  /**
+   * Create a read-only filesystem facade layered on top of an optional base
+   * filesystem implementation.
+   */
+  static readonly ReadOnlyFileSystem = fs.readOnly;
 
-  static readonly SanitizePath = (
-    path: string,
-    { removeRoot, removeLeadingSlash, root }: FileSystem.SanitizeOptions,
-  ) => {
-    if (removeRoot && path.startsWith(root)) path = path.replace(root, "");
-    if (removeLeadingSlash && path.startsWith("/")) path = path.slice(1);
-    return path;
-  };
+  /**
+   * Create a write-only filesystem facade layered on top of an optional base
+   * filesystem implementation.
+   */
+  static readonly WriteOnlyFileSystem = fs.writeOnly;
 
-  static readonly ReadonlyFileSystem = (
-    options: FileSystem.Read & FileSystem.CreationOptions,
-  ): Environment["fs"] => {
-    PythonKernel.SetFileSystemDefaults(options);
-    const { get, listDirectory, root, log } = options;
-    const fs = PythonKernel.EmptyFileSystem(root, log);
-    return {
-      ...fs,
-      listDirectory(opts) {
-        const data = listDirectory(
-          PythonKernel.SanitizePath(opts.path, options),
-        );
-        if (Array.isArray(data)) return { ok: true as const, data };
-        else return fs.listDirectory(opts);
-      },
-      get(opts) {
-        const data = get(PythonKernel.SanitizePath(opts.path, options));
-        if (typeof data === "string") return { ok: true as const, data };
-        if (data && typeof data === "object" && "directory" in data)
-          return { ok: true as const, data: null };
-        else return fs.get(opts);
-      },
-    };
-  };
+  /** Create a read-write filesystem facade by composing read-only and write-only adapters. */
+  static readonly ReadWriteFileSystem = fs.readWrite;
 
-  static WriteOnlyFileSystem = (
-    options: { put: FileSystem.Put } & FileSystem.CreationOptions,
-  ): Environment["fs"] => {
-    PythonKernel.SetFileSystemDefaults(options);
-    const { root, log, put } = options;
-    const fs = PythonKernel.EmptyFileSystem(root, log);
-    return {
-      ...fs,
-      put({ path, value }) {
-        put(PythonKernel.SanitizePath(path, options), value);
-        return { ok: true as const, data: undefined };
-      },
-    };
-  };
+  static AssetUrl({
+    value,
+    ...rest
+  }: {
+    value: string;
+  } & ({ path: string } | { mimeType: string })) {
+    if (value === null) return null;
+    if (value.startsWith("data:")) return value;
+    const mimeType =
+      "mimeType" in rest ? rest.mimeType : fs.inferMimeType(rest.path);
+    return `data:${mimeType};base64,${toBase64(value)}`;
+  }
 
-  static readonly ReadWriteFileSystem = (
-    options: FileSystem.Read & FileSystem.Write & FileSystem.CreationOptions,
-  ): Environment["fs"] => ({
-    ...PythonKernel.ReadonlyFileSystem(options),
-    put: PythonKernel.WriteOnlyFileSystem(options).put,
-  });
-
-  static readonly DefaultEnvironment = ({
+  /** Build an environment with default filesystem and input handlers. */
+  static readonly Environment = ({
     fs = PythonKernel.EmptyFileSystem(),
     input = PythonKernel.DefaultInput,
   }: Partial<Environment> = {}): Environment => ({ input, fs });
 
-  static readonly Default = () =>
-    new PythonKernel(PythonKernel.DefaultEnvironment());
-}
-
-namespace FileSystem {
-  export type SanitizeOptions = {
-    root: string;
-    removeRoot: boolean;
-    removeLeadingSlash: boolean;
-  };
-
-  export type CreationOptions = Partial<SanitizeOptions> & {
-    log?: boolean;
-  };
-
-  export type Get = (
-    path: string,
-  ) => string | undefined | null | { directory: true };
-  export type Put = (path: string, value: string | null) => void;
-  export type ListDirectory = (path: string) => string[];
-
-  export type Read = { get: Get } & {
-    listDirectory: ListDirectory;
-  };
-  export type Write = { put: Put };
+  /** Construct a kernel with the default environment configuration. */
+  static readonly Default = () => new PythonKernel(PythonKernel.Environment());
 }
