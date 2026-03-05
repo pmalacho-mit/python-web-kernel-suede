@@ -313,9 +313,9 @@ export class ObjectProxyClient {
    */
   deserializeMemory(memory: AsyncMemory) {
     const numberOfBytes = memory.readSize();
+    // +1 to account for the type byte at index 0
     const totalBytes = numberOfBytes + 1;
 
-    // Uint8Arrays have the convenient property of having 1 byte per element.
     let resultBytes: Uint8Array;
     if (totalBytes <= memory.sharedMemory.byteLength) {
       resultBytes = memory.memory;
