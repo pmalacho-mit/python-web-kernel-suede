@@ -102,7 +102,7 @@ export const sanitizePath = (
 ) => {
   if (removeRoot && path.startsWith(root)) path = path.replace(root, "");
   if (removeLeadingSlash && path.startsWith("/")) path = path.slice(1);
-  return path;
+  return path === "" ? (removeLeadingSlash ? path : "/") : path;
 };
 
 /** Apply default values for filesystem sanitize options. */
@@ -185,10 +185,22 @@ export const readWrite = (
   return readOnly(options, writeOnly(options, base));
 };
 
+export const inferMimeType = (path: string) => {
+  const lowerPath = path.toLowerCase();
+  if (lowerPath.endsWith(".gif")) return "image/gif";
+  if (lowerPath.endsWith(".png")) return "image/png";
+  if (lowerPath.endsWith(".jpg") || lowerPath.endsWith(".jpeg"))
+    return "image/jpeg";
+  if (lowerPath.endsWith(".webp")) return "image/webp";
+  if (lowerPath.endsWith(".svg")) return "image/svg+xml";
+  return "application/octet-stream";
+};
+
 export default {
   defaultRoot,
   empty,
   readOnly,
   writeOnly,
   readWrite,
+  inferMimeType,
 };
