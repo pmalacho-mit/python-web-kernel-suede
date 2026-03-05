@@ -313,26 +313,30 @@ export class ObjectProxyClient {
    */
   deserializeMemory(memory: AsyncMemory) {
     const numberOfBytes = memory.readSize();
+    const totalBytes = numberOfBytes + 1;
 
     // Uint8Arrays have the convenient property of having 1 byte per element.
     let resultBytes: Uint8Array;
-    if (numberOfBytes <= memory.sharedMemory.byteLength) {
+    if (totalBytes <= memory.sharedMemory.byteLength) {
       resultBytes = memory.memory;
     } else {
       const memorySize = memory.sharedMemory.byteLength;
-      let offset = 0;
-      let remainingBytes = numberOfBytes;
-      resultBytes = new Uint8Array(numberOfBytes);
-      while (remainingBytes >= memorySize) {
-        resultBytes.set(memory.memory, offset);
-        offset += memorySize;
-        remainingBytes -= memorySize;
+      resultBytes = new Uint8Array(totalBytes);
+
+      resultBytes[0] = memory.memory[0];
+
+      let copiedPayload = Math.min(numberOfBytes, memorySize - 1);
+      resultBytes.set(memory.memory.subarray(1, 1 + copiedPayload), 1);
+
+      while (copiedPayload < numberOfBytes) {
         memory.lockSize();
         this.postMessage({ type: "proxy_shared_memory" });
         memory.waitForSize();
-      }
-      if (remainingBytes > 0) {
-        resultBytes.set(memory.memory.subarray(0, remainingBytes), offset);
+
+        const remaining = numberOfBytes - copiedPayload;
+        const take = Math.min(remaining, memorySize);
+        resultBytes.set(memory.memory.subarray(0, take), 1 + copiedPayload);
+        copiedPayload += take;
       }
     }
 

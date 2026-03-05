@@ -5,7 +5,7 @@ import { AsyncMemory } from "./worker/async-memory";
 import { ObjectProxyHost } from "./worker/object-proxy";
 import type { Kernel } from "./worker/kernel-worker";
 import type { SyncFileSystem } from "./worker/emscripten-fs";
-import { flatPromise, type Expand } from "./utils";
+import { flatPromise, toBase64, type Expand } from "./utils";
 import { type Output, make } from "./output";
 import fs from "./fs";
 
@@ -292,6 +292,23 @@ export default class PythonKernel {
     this.asyncMemory.dispose();
   }
 
+  assetURL(request: { path: string }): string | null;
+  assetURL(request: { value: string; path: string }): string | null;
+  assetURL(request: { value: string; mimeType: string }): string | null;
+  assetURL(request: { path: string } | { value: string; mimeType: string }) {
+    if ("value" in request) return PythonKernel.AssetUrl(request);
+    else {
+      const value = this.environment.fs.get(request);
+      const { path } = request;
+      if (typeof value !== "string") {
+        console.warn(`Asset at path "${path}" not found or is a directory`);
+        return null;
+      }
+      const mimeType = fs.inferMimeType(path);
+      return PythonKernel.AssetUrl({ value, mimeType });
+    }
+  }
+
   static readonly DefaultFileSystemRoot = fs.defaultRoot;
 
   /** Default prompt implementation used by the kernel environment. */
@@ -318,6 +335,19 @@ export default class PythonKernel {
 
   /** Create a read-write filesystem facade by composing read-only and write-only adapters. */
   static readonly ReadWriteFileSystem = fs.readWrite;
+
+  static AssetUrl({
+    value,
+    ...rest
+  }: {
+    value: string;
+  } & ({ path: string } | { mimeType: string })) {
+    if (value === null) return null;
+    if (value.startsWith("data:")) return value;
+    const mimeType =
+      "mimeType" in rest ? rest.mimeType : fs.inferMimeType(rest.path);
+    return `data:${mimeType};base64,${toBase64(value)}`;
+  }
 
   /** Build an environment with default filesystem and input handlers. */
   static readonly Environment = ({
