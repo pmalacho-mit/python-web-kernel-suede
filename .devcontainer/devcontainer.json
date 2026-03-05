@@ -2,10 +2,15 @@
   "customizations": {
     "vscode": {
       "extensions": [
+        "anthropic.claude-code",
         "ms-vscode.vscode-typescript-next",
         "esbenp.prettier-vscode",
-        "svelte.svelte-vscode"
+        "svelte.svelte-vscode",
+        "bradlc.vscode-tailwindcss"
       ],
+      "files.associations": {
+        "*.css": "tailwindcss"
+      },
       "settings": {
         "[javascript]": {
           "editor.defaultFormatter": "esbenp.prettier-vscode"
@@ -25,7 +30,7 @@
       }
     },
     "pmalacho-mit/devcontainers": {
-      "ref": "devcontainer.svelte-default.json"
+      "ref": "devcontainer.svelte-tailwind-default.json"
     }
   },
   "features": {
