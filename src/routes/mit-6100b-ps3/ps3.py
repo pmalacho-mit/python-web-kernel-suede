@@ -17,7 +17,6 @@
 
 from collections import deque
 import matplotlib.pyplot as plt
-import scipy
 import networkx as nx
 import random
 import helper

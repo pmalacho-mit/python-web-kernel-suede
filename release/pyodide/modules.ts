@@ -44,3 +44,10 @@ export const unloadLocalModules = async (pyodide: PyodideAPI, root: string) => {
   if (unloaded instanceof pyodide.ffi.PyProxy) unloaded.destroy();
   return report;
 };
+
+export const tryResolveProblematicDependencies = async (
+  pyodide: PyodideAPI,
+  loadedPackages: Set<string>,
+) => {
+  if (loadedPackages.has("networkx")) await pyodide.loadPackage("scipy");
+};
