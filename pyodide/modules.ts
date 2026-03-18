@@ -44,3 +44,60 @@ export const unloadLocalModules = async (pyodide: PyodideAPI, root: string) => {
   if (unloaded instanceof pyodide.ffi.PyProxy) unloaded.destroy();
   return report;
 };
+
+export const loadMsgFilter = (
+  callback?: (msg: string) => void,
+): ((message: string) => void) => {
+  // We prevent some spam, otherwise every time you run a cell with an import it will show
+  // "Loading bla", "Bla was already loaded from default channel", "Loaded bla"
+  let wasAlreadyLoaded: boolean | undefined = undefined;
+  const msgBuffer: string[] = [];
+
+  return (msg) => {
+    callback?.(msg);
+    if (wasAlreadyLoaded === true) return;
+
+    if (wasAlreadyLoaded === false) {
+      if (msg.match(/already loaded from default channel$/)) return; // This is not the main package being loaded but another dependency that is already loaded - no need to list it.
+      console.debug(msg);
+    }
+
+    if (wasAlreadyLoaded === undefined) {
+      if (msg.match(/already loaded from default channel$/)) {
+        wasAlreadyLoaded = true;
+        return;
+      }
+      if (msg.match(/^Loading [a-z\-, ]*/)) {
+        wasAlreadyLoaded = false;
+        msgBuffer.forEach((m) => console.debug(m));
+        console.debug(msg);
+      }
+    }
+  };
+};
+
+export const loadMsgFilterAndCollectPackages = () => {
+  const loadedPackages = new Set<string>();
+  const loadedPrefix = "Loaded ";
+
+  const messageCallback = loadMsgFilter((msg) =>
+    msg
+      .slice(loadedPrefix.length)
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .forEach((p) => loadedPackages.add(p)),
+  );
+
+  return { messageCallback, loadedPackages };
+};
+
+export const tryResolveProblematicDependencies = async (
+  pyodide: PyodideAPI,
+  loadedPackages: Set<string>,
+) => {
+  if (loadedPackages.has("networkx"))
+    await pyodide.loadPackage("scipy", {
+      messageCallback: loadMsgFilter(),
+    });
+};
