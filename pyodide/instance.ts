@@ -5,6 +5,7 @@ import {
   unloadLocalModules,
   asImage,
   tryResolveProblematicDependencies,
+  loadMsgFilterAndCollectPackages,
 } from "./modules";
 import { loadPyodide, version, type PyodideAPI } from "pyodide";
 import { make, type Output } from "../output";
@@ -116,46 +117,11 @@ export class PyodideInstance {
     if (!this.pyodide)
       return console.warn("Worker has not yet been initialized");
 
-    // We prevent some spam, otherwise every time you run a cell with an import it will show
-    // "Loading bla", "Bla was already loaded from default channel", "Loaded bla"
-    let wasAlreadyLoaded: boolean | undefined = undefined;
-    const msgBuffer: string[] = [];
-    const loadedPrefix = "Loaded ";
-    const loadedPackages = new Set<string>();
-
     this.pyodide.setInterruptBuffer(undefined as any); // Disable interrupts while loading packages
 
-    await this.pyodide.loadPackagesFromImports(code, {
-      messageCallback: (msg) => {
-        if (msg.startsWith(loadedPrefix))
-          msg
-            .slice(loadedPrefix.length)
-            .split(",")
-            .map((p) => p.trim())
-            .filter(Boolean)
-            .forEach((p) => loadedPackages.add(p));
-
-        if (wasAlreadyLoaded === true) return;
-
-        if (wasAlreadyLoaded === false) {
-          if (msg.match(/already loaded from default channel$/)) return; // This is not the main package being loaded but another dependency that is already loaded - no need to list it.
-          console.debug(msg);
-        }
-
-        if (wasAlreadyLoaded === undefined) {
-          if (msg.match(/already loaded from default channel$/)) {
-            wasAlreadyLoaded = true;
-            return;
-          }
-          if (msg.match(/^Loading [a-z\-, ]*/)) {
-            wasAlreadyLoaded = false;
-            msgBuffer.forEach((m) => console.debug(m));
-            console.debug(msg);
-          }
-        }
-      },
-    });
-
+    const { loadedPackages, messageCallback } =
+      loadMsgFilterAndCollectPackages();
+    await this.pyodide.loadPackagesFromImports(code, { messageCallback });
     await tryResolveProblematicDependencies(this.pyodide, loadedPackages);
   }
 
