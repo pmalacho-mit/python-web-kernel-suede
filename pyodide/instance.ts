@@ -1,6 +1,11 @@
 import type { Kernel } from "../worker/kernel-worker";
 import { EMFS } from "../worker/emscripten-fs";
-import { patchMatplotlib, unloadLocalModules, asImage } from "./modules";
+import {
+  patchMatplotlib,
+  unloadLocalModules,
+  asImage,
+  tryResolveProblematicDependencies,
+} from "./modules";
 import { loadPyodide, version, type PyodideAPI } from "pyodide";
 import { make, type Output } from "../output";
 
@@ -114,12 +119,22 @@ export class PyodideInstance {
     // We prevent some spam, otherwise every time you run a cell with an import it will show
     // "Loading bla", "Bla was already loaded from default channel", "Loaded bla"
     let wasAlreadyLoaded: boolean | undefined = undefined;
-    let msgBuffer: string[] = [];
+    const msgBuffer: string[] = [];
+    const loadedPrefix = "Loaded ";
+    const loadedPackages = new Set<string>();
 
     this.pyodide.setInterruptBuffer(undefined as any); // Disable interrupts while loading packages
 
     await this.pyodide.loadPackagesFromImports(code, {
       messageCallback: (msg) => {
+        if (msg.startsWith(loadedPrefix))
+          msg
+            .slice(loadedPrefix.length)
+            .split(",")
+            .map((p) => p.trim())
+            .filter(Boolean)
+            .forEach((p) => loadedPackages.add(p));
+
         if (wasAlreadyLoaded === true) return;
 
         if (wasAlreadyLoaded === false) {
@@ -140,6 +155,8 @@ export class PyodideInstance {
         }
       },
     });
+
+    await tryResolveProblematicDependencies(this.pyodide, loadedPackages);
   }
 
   async run(
