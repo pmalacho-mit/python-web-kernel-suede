@@ -101,3 +101,22 @@ export const tryResolveProblematicDependencies = async (
       messageCallback: loadMsgFilter(),
     });
 };
+
+export const tryLoadImportsOfLocallyImportedModules = async (
+  pyodide: PyodideAPI,
+  source: string,
+  filename: string,
+) => {
+  await pyodide.loadPackage("micropip", { messageCallback: loadMsgFilter() });
+  const modules = await pyodide.runPythonAsync(
+    code.recursivelyFindExternalImports(source, filename),
+  );
+  const toInstall = new Set(modules.toJs() as string[]);
+  if (modules instanceof pyodide.ffi.PyProxy) modules.destroy();
+  console.log({ toInstall });
+
+  for (const mod of toInstall)
+    await pyodide.loadPackage(mod, { messageCallback: loadMsgFilter() });
+  tryResolveProblematicDependencies(pyodide, toInstall);
+  return toInstall;
+};

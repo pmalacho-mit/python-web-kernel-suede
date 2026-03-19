@@ -10,6 +10,17 @@ import type { Typed } from "../utils";
 import { make, type Output } from "../output";
 
 export namespace Kernel {
+  type Source = {
+    code: string;
+    /**
+     * The filename to associate with this code execution
+     *
+     * Relative paths will be resolved against the kernel's workspace root.
+     *
+     * @example /home/pyodide/main.py
+     */
+    file: string;
+  };
   export type Requests = {
     initialize: {
       asyncMemory: {
@@ -29,21 +40,10 @@ export namespace Kernel {
        */
       root: string;
     };
-    run: {
-      code: string;
-      /**
-       * The filename to associate with this code execution
-       *
-       * Relative paths will be resolved against the kernel's workspace root.
-       *
-       * @example /home/pyodide/main.py
-       */
-      file: string;
+    run: Source & {
       unloadLocalModules?: boolean;
     };
-    load: {
-      code: string;
-    };
+    load: Source;
   };
 
   export type Responses = {
@@ -100,14 +100,14 @@ const handler = {
     await manager.pyodide.init(manager, data.root);
     manager.postMessage({ type: "initialized" });
   },
-  onRun: async (manager, { code, file: filename, unloadLocalModules }) => {
+  onRun: async (manager, { code, file, unloadLocalModules }) => {
     let loaded = false;
     try {
-      await manager.pyodide.load(code);
+      await manager.pyodide.load(code, file);
       if (unloadLocalModules) await manager.pyodide.unloadLocalModules();
       loaded = true;
       manager.postMessage({ type: "loaded" });
-      const value = await manager.pyodide.run(code, filename);
+      const value = await manager.pyodide.run(code, file);
       if (value) manager.output(value);
     } catch (e) {
       manager.output(
@@ -122,9 +122,9 @@ const handler = {
       manager.postMessage({ type: "finished" });
     }
   },
-  onLoad: async (manager, { code }) => {
+  onLoad: async (manager, { code, file }) => {
     try {
-      await manager.pyodide.load(code);
+      await manager.pyodide.load(code, file);
     } catch (e) {
       manager.output(
         make("error", {
