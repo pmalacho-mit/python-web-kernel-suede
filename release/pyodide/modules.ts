@@ -113,8 +113,6 @@ export const tryLoadImportsOfLocallyImportedModules = async (
   );
   const toInstall = new Set(modules.toJs() as string[]);
   if (modules instanceof pyodide.ffi.PyProxy) modules.destroy();
-  console.log({ toInstall });
-
   for (const mod of toInstall)
     await pyodide.loadPackage(mod, { messageCallback: loadMsgFilter() });
   tryResolveProblematicDependencies(pyodide, toInstall);
