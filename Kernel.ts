@@ -166,14 +166,15 @@ export default class PythonKernel {
    *
    * This only resolves imports; it does not execute the code body.
    */
-  load(code: string): Promise<void> {
+  load(code: string, filename?: string): Promise<void> {
     const { previous, done } = this.queueOperation();
     return new Promise<void>(async (resolve) => {
       try {
         await this.ready;
         await previous;
         const loaded = this.signal("loaded");
-        this.post({ type: "load", code });
+        const file = filename ?? defaultPath(this.environment);
+        this.post({ type: "load", code, file });
         await loaded;
       } finally {
         done.resolve();

@@ -6,6 +6,7 @@ import {
   asImage,
   tryResolveProblematicDependencies,
   loadMsgFilterAndCollectPackages,
+  tryLoadImportsOfLocallyImportedModules,
 } from "./modules";
 import { loadPyodide, version, type PyodideAPI } from "pyodide";
 import { make, type Output } from "../output";
@@ -113,7 +114,7 @@ export class PyodideInstance {
     );
   }
 
-  async load(code: string): Promise<void> {
+  async load(code: string, filename: string): Promise<void> {
     if (!this.pyodide)
       return console.warn("Worker has not yet been initialized");
 
@@ -123,6 +124,7 @@ export class PyodideInstance {
       loadMsgFilterAndCollectPackages();
     await this.pyodide.loadPackagesFromImports(code, { messageCallback });
     await tryResolveProblematicDependencies(this.pyodide, loadedPackages);
+    await tryLoadImportsOfLocallyImportedModules(this.pyodide, code, filename);
   }
 
   async run(
