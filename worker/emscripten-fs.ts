@@ -123,7 +123,7 @@ const methods = (
     ERRNO_CODES,
   }: Pick<PyodideAPI, "FS" | "ERRNO_CODES"> & { FS: AdvancedEmscriptenFS },
   custom: SyncFileSystem,
-  log: boolean = false,
+  log: boolean = true,
 ) => {
   let createNode: AdvancedEmscriptenFS["createNode"];
 

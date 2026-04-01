@@ -1,5 +1,6 @@
 import type { PyodideAPI } from "pyodide";
 import { code } from "./python";
+import supported from "./supported-packages";
 
 const Key = {
   MatplotLibEmit: "__python_web_kernel_emit_matplotlib",
@@ -102,6 +103,12 @@ export const tryResolveProblematicDependencies = async (
     });
 };
 
+const autoInstallableExternalPackages = new Map<string, string>([
+  ["pycountry_convert", "pycountry_convert"],
+  ["pymannkendall", "pymannkendall"],
+  ["sklearn", "scikit-learn"],
+]);
+
 export const tryLoadImportsOfLocallyImportedModules = async (
   pyodide: PyodideAPI,
   source: string,
@@ -111,10 +118,23 @@ export const tryLoadImportsOfLocallyImportedModules = async (
   const modules = await pyodide.runPythonAsync(
     code.recursivelyFindExternalImports(source, filename),
   );
-  const toInstall = new Set(modules.toJs() as string[]);
+  const result = modules.toJs() as [string[], string[]];
+  const toInstall = new Set(result[0]);
+  const discoveredDirs = result[1];
+
   if (modules instanceof pyodide.ffi.PyProxy) modules.destroy();
   for (const mod of toInstall)
-    await pyodide.loadPackage(mod, { messageCallback: loadMsgFilter() });
+    if (autoInstallableExternalPackages.has(mod))
+      await pyodide.runPythonAsync(
+        code.micropipInstall(autoInstallableExternalPackages.get(mod)!),
+      );
+    else if (supported.has(mod))
+      await pyodide.loadPackage(mod, {
+        messageCallback: loadMsgFilter(),
+      });
   tryResolveProblematicDependencies(pyodide, toInstall);
-  return toInstall;
+  return { toInstall, discoveredDirs };
 };
+
+export const addToSysPath = async (pyodide: PyodideAPI, path: string) =>
+  pyodide.runPythonAsync(code.addToSysPath(path));
