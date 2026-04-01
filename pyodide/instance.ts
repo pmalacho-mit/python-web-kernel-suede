@@ -82,7 +82,7 @@ export class PyodideInstance {
 
     this.pyodide = await loadPyodide({
       indexURL,
-      fullStdLib: true,
+      fullStdLib: false,
     });
 
     const { stdin, stdout, stderr } = io(manager);
