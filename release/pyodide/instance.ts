@@ -82,7 +82,7 @@ export class PyodideInstance {
 
     this.pyodide = await loadPyodide({
       indexURL,
-      fullStdLib: false,
+      fullStdLib: true,
     });
 
     const { stdin, stdout, stderr } = io(manager);
@@ -194,6 +194,22 @@ export class PyodideInstance {
       "queueMicrotask",
       "setInterval",
       "setTimeout",
+
+      // networking
+      "URL",
+      "URLSearchParams",
+      "Headers",
+      "Request",
+      "Response",
+      "AbortController",
+      "AbortSignal",
+      "TextEncoder",
+      "TextDecoder",
+
+      // builtins
+      "Object",
+      "Array",
+      "JSON",
 
       // Special cases for the pyodide globalThis
       "$$",

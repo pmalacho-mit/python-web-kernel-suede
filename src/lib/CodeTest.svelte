@@ -45,7 +45,10 @@
   import { Editor } from "../suede/python-monaco-suede";
   import "dockview-core/dist/styles/dockview.css";
 
-  let { fs }: { fs: Filesystem } = $props();
+  let {
+    fs,
+    before,
+  }: { fs: Filesystem; before?: (kernel: Kernel) => Promise<void> } = $props();
 
   const outputs: Output.Any[] = $state([]);
   let runningCount = $state(0);
@@ -177,18 +180,20 @@
         api.addSnippetPanel("directories", { directories });
 
       const run = (file: Editor.Model) => {
-        kernel.run({
-          code: file.source,
-          path: file.path,
-          on: {
-            start: () => {
-              runningCount += 1;
+        (before?.(kernel) ?? Promise.resolve()).then(() => {
+          kernel.run({
+            code: file.source,
+            path: file.path,
+            on: {
+              start: () => {
+                runningCount += 1;
+              },
+              output: (output) => outputs.push(output),
+              complete: () => {
+                runningCount = Math.max(0, runningCount - 1);
+              },
             },
-            output: (output) => outputs.push(output),
-            complete: () => {
-              runningCount = Math.max(0, runningCount - 1);
-            },
-          },
+          });
         });
       };
 

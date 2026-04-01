@@ -78,7 +78,42 @@ export class ObjectProxyHost {
 
   /** Creates a valid, random id for a given object */
   private getId(value: any) {
-    return nanoid() + "-" + (typeof value === "function" ? "f" : "o");
+    const suffix = typeof value === "function" ? "f" : "o";
+    const label = this.getLabel(value);
+    return `${nanoid()}-${label}-${suffix}`;
+  }
+
+  private getLabel(value: any): string {
+    try {
+      if (typeof value === "function") {
+        return value.name || "anon";
+      }
+      if (value === globalThis) return "globalThis";
+      if (value instanceof Headers) return "Headers";
+      if (value instanceof Request) return "Request";
+      if (value instanceof Response) return "Response";
+      if (value instanceof AbortController) return "AbortController";
+      if (value instanceof AbortSignal) return "AbortSignal";
+      if (value instanceof URL) return "URL";
+      if (value instanceof Promise) return "Promise";
+      if (value instanceof Error) return "Error";
+      if (value instanceof Map) return "Map";
+      if (value instanceof Set) return "Set";
+      if (value instanceof ArrayBuffer) return "ArrayBuffer";
+      if (Array.isArray(value)) return "Array";
+
+      // Try constructor name
+      const ctorName = value?.constructor?.name;
+      if (ctorName && ctorName !== "Object") return ctorName;
+
+      // For plain objects, show first few keys
+      const keys = Object.keys(value);
+      if (keys.length > 0) return `{${keys.slice(0, 3).join(",")}}`;
+
+      return "obj";
+    } catch {
+      return "unknown";
+    }
   }
 
   registerRootObject(value: any) {
@@ -302,9 +337,10 @@ export class ObjectProxyClient {
       return value;
     } else if (value[ObjectId] !== undefined) {
       return { id: value[ObjectId] };
+    } else if (Array.isArray(value)) {
+      return { value: value.map((v) => this.serializePostMessage(v)) };
     } else {
-      // Maybe serialize simple functions https://stackoverflow.com/questions/1833588/javascript-clone-a-function
-      return { value: value }; // Might fail to get serialized
+      return { value: value };
     }
   }
 
@@ -393,6 +429,14 @@ export class ObjectProxyClient {
       this.memory.lockSize();
       this.memory.writeSize(0);
       if (method === "apply") {
+        const serializedArgs = args[1].map((v: any[]) =>
+          this.serializePostMessage(v),
+        );
+
+        // Debug: log what's about to be sent
+        console.log("apply serializedArgs:", serializedArgs);
+        console.log("apply raw args:", args[1]);
+
         // Special case for "apply"
         this.postMessage({
           type: "proxy_reflect",
@@ -473,8 +517,13 @@ export class ObjectProxyClient {
 
     return new Proxy(this.isFunction(id) ? function () {} : {}, {
       get(target, prop, receiver) {
+        console.log("GET", prop, id);
         if (prop === ObjectId) {
           return id;
+        }
+
+        if (prop === "fetch") {
+          console.trace("fetch accessed on proxy with id:", id);
         }
 
         // const value = Reflect.get(target, prop, receiver);
@@ -586,10 +635,19 @@ export class ObjectProxyClient {
         }
 
         const value = Reflect.get(target, prop, receiver);
+
         if (typeof value !== "function") return value;
         return new Proxy(value, {
           apply(_, thisArg, args) {
             const calledWithProxy = thisArg === receiver;
+            console.log(
+              "Calling",
+              prop.toString(),
+              "with thisArg",
+              thisArg,
+              "and args",
+              args,
+            );
             return Reflect.apply(
               value,
               calledWithProxy ? target : thisArg,
