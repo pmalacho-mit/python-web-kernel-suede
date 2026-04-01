@@ -340,7 +340,8 @@ export class ObjectProxyClient {
     } else if (Array.isArray(value)) {
       return { value: value.map((v) => this.serializePostMessage(v)) };
     } else {
-      return { value: value };
+      // Maybe serialize simple functions https://stackoverflow.com/questions/1833588/javascript-clone-a-function
+      return { value: value }; // Might fail to get serialized
     }
   }
 
@@ -429,14 +430,6 @@ export class ObjectProxyClient {
       this.memory.lockSize();
       this.memory.writeSize(0);
       if (method === "apply") {
-        const serializedArgs = args[1].map((v: any[]) =>
-          this.serializePostMessage(v),
-        );
-
-        // Debug: log what's about to be sent
-        console.log("apply serializedArgs:", serializedArgs);
-        console.log("apply raw args:", args[1]);
-
         // Special case for "apply"
         this.postMessage({
           type: "proxy_reflect",
@@ -517,13 +510,8 @@ export class ObjectProxyClient {
 
     return new Proxy(this.isFunction(id) ? function () {} : {}, {
       get(target, prop, receiver) {
-        console.log("GET", prop, id);
         if (prop === ObjectId) {
           return id;
-        }
-
-        if (prop === "fetch") {
-          console.trace("fetch accessed on proxy with id:", id);
         }
 
         // const value = Reflect.get(target, prop, receiver);
@@ -640,14 +628,6 @@ export class ObjectProxyClient {
         return new Proxy(value, {
           apply(_, thisArg, args) {
             const calledWithProxy = thisArg === receiver;
-            console.log(
-              "Calling",
-              prop.toString(),
-              "with thisArg",
-              thisArg,
-              "and args",
-              args,
-            );
             return Reflect.apply(
               value,
               calledWithProxy ? target : thisArg,
