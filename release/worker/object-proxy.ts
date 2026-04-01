@@ -78,7 +78,42 @@ export class ObjectProxyHost {
 
   /** Creates a valid, random id for a given object */
   private getId(value: any) {
-    return nanoid() + "-" + (typeof value === "function" ? "f" : "o");
+    const suffix = typeof value === "function" ? "f" : "o";
+    const label = this.getLabel(value);
+    return `${nanoid()}-${label}-${suffix}`;
+  }
+
+  private getLabel(value: any): string {
+    try {
+      if (typeof value === "function") {
+        return value.name || "anon";
+      }
+      if (value === globalThis) return "globalThis";
+      if (value instanceof Headers) return "Headers";
+      if (value instanceof Request) return "Request";
+      if (value instanceof Response) return "Response";
+      if (value instanceof AbortController) return "AbortController";
+      if (value instanceof AbortSignal) return "AbortSignal";
+      if (value instanceof URL) return "URL";
+      if (value instanceof Promise) return "Promise";
+      if (value instanceof Error) return "Error";
+      if (value instanceof Map) return "Map";
+      if (value instanceof Set) return "Set";
+      if (value instanceof ArrayBuffer) return "ArrayBuffer";
+      if (Array.isArray(value)) return "Array";
+
+      // Try constructor name
+      const ctorName = value?.constructor?.name;
+      if (ctorName && ctorName !== "Object") return ctorName;
+
+      // For plain objects, show first few keys
+      const keys = Object.keys(value);
+      if (keys.length > 0) return `{${keys.slice(0, 3).join(",")}}`;
+
+      return "obj";
+    } catch {
+      return "unknown";
+    }
   }
 
   registerRootObject(value: any) {
@@ -302,6 +337,8 @@ export class ObjectProxyClient {
       return value;
     } else if (value[ObjectId] !== undefined) {
       return { id: value[ObjectId] };
+    } else if (Array.isArray(value)) {
+      return { value: value.map((v) => this.serializePostMessage(v)) };
     } else {
       // Maybe serialize simple functions https://stackoverflow.com/questions/1833588/javascript-clone-a-function
       return { value: value }; // Might fail to get serialized
@@ -586,6 +623,7 @@ export class ObjectProxyClient {
         }
 
         const value = Reflect.get(target, prop, receiver);
+
         if (typeof value !== "function") return value;
         return new Proxy(value, {
           apply(_, thisArg, args) {

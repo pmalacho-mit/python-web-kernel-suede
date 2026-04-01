@@ -76,3 +76,6 @@ export const toBase64 = (value: string) => {
   }
   return btoa(binary);
 };
+
+export const dirname = (path: string): string =>
+  path.substring(0, path.lastIndexOf("/")) || ".";
