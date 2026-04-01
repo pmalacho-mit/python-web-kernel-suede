@@ -189,7 +189,7 @@ class Results_600(unittest.TextTestResult):
 
         failure_message = getattr(func, "failure_message", "")
 
-        self.output.append(f"❌ [-{pts}] {failure_message}, {err[1]}\n")
+        self.output.append(f"X [-{pts}] {failure_message}, {err[1]}\n")
         self.max_points += pts
 
         super(Results_600, self).addFailure(test, err)
@@ -201,7 +201,7 @@ class Results_600(unittest.TextTestResult):
 
         error_message = getattr(func, "error_message", "")
 
-        self.output.append(f"❌ [-{pts}] {error_message}, {err[1]}\n")
+        self.output.append(f"X [-{pts}] {error_message}, {err[1]}\n")
         self.max_points += pts
 
         super(Results_600, self).addError(test, err)
@@ -211,13 +211,13 @@ class Results_600(unittest.TextTestResult):
         Return the captured output
         """
         if self.points == self.max_points:
-            self.output.append(f"\n✅ [{self.points}] All tests passed! 🎉\n")
+            self.output.append(f"\nOK [{self.points}] All tests passed! SUCCESS\n")
         elif self.points > 0:
             self.output.append(
-                f"\n✅ [{self.points}/{self.max_points}] Some tests passed.\n"
+                f"\nOK [{self.points}/{self.max_points}] Some tests passed.\n"
             )
         else:
-            self.output.append(f"\n❌ [0/{self.max_points}] No tests passed.\n")
+            self.output.append(f"\nX [0/{self.max_points}] No tests passed.\n")
 
         return "\n".join(self.output)
 
@@ -227,3 +227,4 @@ class Results_600(unittest.TextTestResult):
         """
 
         return self.points
+  

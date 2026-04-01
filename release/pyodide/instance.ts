@@ -7,9 +7,11 @@ import {
   tryResolveProblematicDependencies,
   loadMsgFilterAndCollectPackages,
   tryLoadImportsOfLocallyImportedModules,
+  addToSysPath,
 } from "./modules";
 import { loadPyodide, version, type PyodideAPI } from "pyodide";
 import { make, type Output } from "../output";
+import { dirname } from "../utils";
 
 const Char = {
   NewLine: 10,
@@ -114,6 +116,16 @@ export class PyodideInstance {
     );
   }
 
+  async addAncestryToSysPath(path: string, recursive = true) {
+    let dir = dirname(path);
+    while (dir !== this.root) {
+      await addToSysPath(this.pyodide!, dir);
+      if (!recursive) return;
+      dir = dirname(dir);
+    }
+    await addToSysPath(this.pyodide!, this.root!);
+  }
+
   async load(code: string, filename: string): Promise<void> {
     if (!this.pyodide)
       return console.warn("Worker has not yet been initialized");
@@ -124,7 +136,14 @@ export class PyodideInstance {
       loadMsgFilterAndCollectPackages();
     await this.pyodide.loadPackagesFromImports(code, { messageCallback });
     await tryResolveProblematicDependencies(this.pyodide, loadedPackages);
-    await tryLoadImportsOfLocallyImportedModules(this.pyodide, code, filename);
+    const { discoveredDirs } = await tryLoadImportsOfLocallyImportedModules(
+      this.pyodide,
+      code,
+      filename,
+    );
+    for (const dir of discoveredDirs)
+      await this.addAncestryToSysPath(dir, false);
+    await this.addAncestryToSysPath(filename, false);
   }
 
   async run(
@@ -133,6 +152,8 @@ export class PyodideInstance {
   ): Promise<Output.Specific | undefined | void> {
     if (!this.pyodide)
       return console.warn("Worker has not yet been initialized");
+
+    await this.addAncestryToSysPath(filename);
 
     let result = await this.pyodide
       .runPythonAsync(code, { filename })

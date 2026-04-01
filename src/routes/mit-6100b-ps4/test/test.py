@@ -31,7 +31,7 @@ class TestProblemSet(TestProblemSetBase):
         super().__init__(*args, **kwargs)
         # file is in grandparent directory
         self.student_script_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "ps4.py"
+            os.getcwd(), "ps4.py"
         )
 
         _, student_locals, _ = run_student_script(self.student_script_path, {})

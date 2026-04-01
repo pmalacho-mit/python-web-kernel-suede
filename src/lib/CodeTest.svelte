@@ -199,6 +199,7 @@
 
       const addPanel = (file: Editor.Model) => {
         const details = { id: file.path };
+        if (file.path.endsWith("__init__.py")) return;
         if (file.name.endsWith(".png"))
           api.addSnippetPanel("image", { file, kernel }, details);
         else if (file.name.endsWith(".gif"))
@@ -211,9 +212,15 @@
           fs: Kernel.ReadWriteFileSystem({
             removeLeadingSlash: false,
             log: true,
-            get: (path) =>
-              models.find(({ model }) => model.path === path)?.model.source ??
-              null,
+            get: (path) => {
+              console.log("Getting file:", path);
+              const source = models.find(({ model }) => model.path === path);
+              if (source)
+                return source.type === "file"
+                  ? source.model.source
+                  : { directory: true };
+              return null;
+            },
             put: (path, source) => {
               console.log("Putting file:", path, source);
               if (!path.startsWith("/")) path = "/" + path;
@@ -243,17 +250,18 @@
                 addPanel(file);
               }
             },
-            listDirectory: (path) =>
-              path === "/"
-                ? models
-                    .filter(({ parent }) => parent === root)
-                    .map(({ model }) => model.name)
-                : models
-                    .filter(
-                      ({ parent, type }) =>
-                        parent.path === path && type === "directory",
-                    )
-                    .map(({ model }) => model.name),
+            listDirectory: (path) => {
+              const results =
+                path === "/"
+                  ? models
+                      .filter(({ parent }) => parent === root)
+                      .map(({ model }) => model.name)
+                  : models
+                      .filter(({ parent, type }) => parent.path === path)
+                      .map(({ model }) => model.name);
+              console.log("Listing directory:", path, results);
+              return results;
+            },
           }),
         }),
       );
