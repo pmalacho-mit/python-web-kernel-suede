@@ -74,9 +74,9 @@ def process_temperature_data(df):
     raise NotImplementedError("Not implemented yet")
 
 
-def process_disaster_data(df):
+def process_population_data(df):
     """
-    Processes the disaster data as specified in the handout.
+    Processes the population data as specified in the handout.
 
     df: a DataFrame
 
@@ -85,9 +85,9 @@ def process_disaster_data(df):
     raise NotImplementedError("Not implemented yet")
 
 
-def process_population_data(df):
+def process_disaster_data(df):
     """
-    Processes the population data as specified in the handout.
+    Processes the disaster data as specified in the handout.
 
     df: a DataFrame
 

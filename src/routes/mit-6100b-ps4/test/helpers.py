@@ -227,4 +227,3 @@ class Results_600(unittest.TextTestResult):
         """
 
         return self.points
-  

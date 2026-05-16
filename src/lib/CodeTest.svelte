@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  interface Filesystem {
+  export interface Filesystem {
     [name: string]: string | Filesystem;
   }
 
@@ -184,6 +184,7 @@
           kernel.run({
             code: file.source,
             path: file.path,
+            unloadLocalModules: true,
             on: {
               start: () => {
                 runningCount += 1;
