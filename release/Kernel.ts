@@ -350,6 +350,31 @@ export default class PythonKernel {
     return `data:${mimeType};base64,${toBase64(value)}`;
   }
 
+  /**
+   * Encode real text into the "binary string" convention used by the kernel
+   * filesystem (one byte per JS char, codepoints 0x00–0xFF). Use this when
+   * handing a file's text contents to {@link FileSystem.Get} / receiving them
+   * from a {@link FileSystem.Put} for a text-typed path. Without this step,
+   * a char like '°' (U+00B0) ends up as a single 0xB0 byte instead of its
+   * two-byte UTF-8 sequence (c2 b0), and Python rejects the file on import.
+   */
+  static TextToBinaryString(text: string): string {
+    const bytes = new TextEncoder().encode(text);
+    const chunkSize = 0x8000;
+    let out = "";
+    for (let index = 0; index < bytes.length; index += chunkSize)
+      out += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+    return out;
+  }
+
+  /** Inverse of {@link PythonKernel.TextToBinaryString}: decode a UTF-8 binary string back into real text. */
+  static BinaryStringToText(binary: string): string {
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index++)
+      bytes[index] = binary.charCodeAt(index) & 0xff;
+    return new TextDecoder("utf-8").decode(bytes);
+  }
+
   /** Build an environment with default filesystem and input handlers. */
   static readonly Environment = ({
     fs = PythonKernel.EmptyFileSystem(),

@@ -8,6 +8,14 @@
   const tryAddExtension = (name: string) =>
     /\.[^./]+$/.test(name) ? name : `${name}.py`;
 
+  // Paths the kernel FS should treat as text. The kernel FS speaks "binary
+  // strings" (one byte per JS char) so it can round-trip arbitrary bytes
+  // like a PNG written by PIL; for text paths we use Kernel.TextToBinaryString
+  // and Kernel.BinaryStringToText to bridge UTF-8 at the boundary.
+  const BINARY_EXT =
+    /\.(png|jpe?g|gif|webp|bmp|ico|tiff?|pdf|zip|gz|tar|whl|pyc|wasm|woff2?|ttf|otf|npy|npz|mp3|mp4|wav|ogg)$/i;
+  const isTextPath = (path: string) => !BINARY_EXT.test(path);
+
   const walk = (
     fs: Filesystem,
     models?: {
@@ -48,7 +56,19 @@
   let {
     fs,
     before,
-  }: { fs: Filesystem; before?: (kernel: Kernel) => Promise<void> } = $props();
+    editors,
+  }: {
+    fs: Filesystem;
+    before?: (kernel: Kernel) => Promise<void>;
+    editors?: string[];
+  } = $props();
+
+  const normalize = (p: string) => (p.startsWith("/") ? p.slice(1) : p);
+  const shouldShow = (file: Editor.Model) => {
+    if (!editors) return true;
+    const path = normalize(file.path);
+    return editors.some((e) => normalize(e) === path);
+  };
 
   const outputs: Output.Any[] = $state([]);
   let runningCount = $state(0);
@@ -200,7 +220,7 @@
 
       const addPanel = (file: Editor.Model) => {
         const details = { id: file.path };
-        if (file.path.endsWith("__init__.py")) return;
+        if (!shouldShow(file)) return;
         if (file.name.endsWith(".png"))
           api.addSnippetPanel("image", { file, kernel }, details);
         else if (file.name.endsWith(".gif"))
@@ -216,10 +236,14 @@
             get: (path) => {
               console.log("Getting file:", path);
               const source = models.find(({ model }) => model.path === path);
-              if (source)
-                return source.type === "file"
-                  ? source.model.source
-                  : { directory: true };
+              if (source) {
+                if (source.type !== "file") return { directory: true };
+                // model.source is real text (for the editor); the kernel FS
+                // wants a binary string. Encode UTF-8 for text paths.
+                return isTextPath(path)
+                  ? Kernel.TextToBinaryString(source.model.source)
+                  : source.model.source;
+              }
               return null;
             },
             put: (path, source) => {
@@ -227,12 +251,17 @@
               if (!path.startsWith("/")) path = "/" + path;
               const existing = models.find(({ model }) => model.path === path);
 
+              // Inverse of `get`: the kernel hands us a binary string; the
+              // editor expects real text. Decode UTF-8 for text paths.
+              const decode = (s: string) =>
+                isTextPath(path) ? Kernel.BinaryStringToText(s) : s;
+
               if (existing) {
                 const panel = api.getPanel(path);
                 if (panel) api.removePanel(panel);
                 if (source === null) models.splice(models.indexOf(existing), 1);
                 else {
-                  existing.model.source = source;
+                  existing.model.source = decode(source);
                   addPanel(existing.model);
                 }
               } else {
@@ -246,7 +275,11 @@
                     ? root
                     : (models.find(({ model }) => model.path === dirname)
                         ?.model ?? root);
-                const file = new Editor.Model({ name, parent, source });
+                const file = new Editor.Model({
+                  name,
+                  parent,
+                  source: decode(source),
+                });
                 models.push({ parent, model: file, type: "file" });
                 addPanel(file);
               }

@@ -107,6 +107,7 @@ const autoInstallableExternalPackages = new Map<string, string>([
   ["pycountry_convert", "pycountry_convert"],
   ["pymannkendall", "pymannkendall"],
   ["sklearn", "scikit-learn"],
+  ["skimage", "scikit-image"],
 ]);
 
 export const tryLoadImportsOfLocallyImportedModules = async (
