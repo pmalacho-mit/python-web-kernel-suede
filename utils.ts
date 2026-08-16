@@ -52,7 +52,7 @@ export function flatPromise<T = any, E = any>(
 
   // This is actually valid.. as in the spec the function above the Promise gets executed immediately.
   executor?.(resolve, reject);
-  
+
   return { promise, resolve, reject };
 }
 

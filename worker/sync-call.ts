@@ -1,5 +1,6 @@
 import type { ChannelHost, ChannelWorker } from "./channel";
 import { codec, type References } from "./codec";
+import { settled, type Settled } from "./settled";
 
 /**
  * Functions the worker may call on the host, grouped by the object they belong
@@ -16,11 +17,6 @@ export type SyncCallMessages = {
   };
 };
 
-type Settled = { ok: true; value: unknown } | { ok: false; error: Error };
-
-const asError = (thrown: unknown) =>
-  thrown instanceof Error ? thrown : new Error(String(thrown));
-
 /**
  * Serves the worker's blocking calls. Runs on the thread that owns the
  * implementations, usually the main thread.
@@ -32,16 +28,9 @@ export class SyncCallHost {
     private readonly references: References,
   ) {}
 
-  async respond(message: SyncCallMessages["sync_call"]) {
-    this.channel.send(this.encode(await this.settle(message)));
-  }
-
-  private async settle(message: SyncCallMessages["sync_call"]): Promise<Settled> {
-    try {
-      return { ok: true, value: await this.invoke(message) };
-    } catch (error) {
-      return { ok: false, error: asError(error) };
-    }
+  async respond(message: SyncCallMessages["sync_call"], request: number) {
+    const result = await settled.captureAsync(() => this.invoke(message));
+    this.channel.send(this.encode(result), request);
   }
 
   private invoke({ target, method, args }: SyncCallMessages["sync_call"]) {
@@ -53,11 +42,11 @@ export class SyncCallHost {
   }
 
   /** A result that cannot be encoded still has to reach the blocked worker. */
-  private encode(settled: Settled) {
+  private encode(result: Settled) {
     try {
-      return codec.encode(settled, this.references);
-    } catch (error) {
-      return codec.encode({ ok: false, error: asError(error) } satisfies Settled);
+      return codec.encode(result, this.references);
+    } catch (thrown) {
+      return codec.encode(settled.failure(thrown));
     }
   }
 }
@@ -69,7 +58,9 @@ export class SyncCallHost {
 export class SyncCallClient {
   constructor(
     private readonly channel: ChannelWorker,
-    private readonly post: (message: { type: "sync_call" } & SyncCallMessages["sync_call"]) => void,
+    private readonly post: (
+      message: { type: "sync_call" } & SyncCallMessages["sync_call"],
+    ) => void,
     private readonly references: References,
   ) {}
 
@@ -77,16 +68,17 @@ export class SyncCallClient {
     const payload = this.channel.request(() =>
       this.post({ type: "sync_call", target, method, args }),
     );
-    const settled = codec.decode(payload, this.references) as Settled;
-    if (!settled.ok) throw settled.error;
-    return settled.value as T;
+    return settled.unwrap(codec.decode(payload, this.references) as Settled<T>);
   }
 
   /** Binds every method of a host target into a blocking local facade. */
   facade<T extends object>(target: string, methods: (keyof T & string)[]): T {
     const bound = methods.map(
       (method) =>
-        [method, (...args: unknown[]) => this.call(target, method, ...args)] as const,
+        [
+          method,
+          (...args: unknown[]) => this.call(target, method, ...args),
+        ] as const,
     );
     return Object.fromEntries(bound) as T;
   }

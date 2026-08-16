@@ -17,6 +17,14 @@ export type Entry = {
   directory: boolean;
 };
 
+/**
+ * What Python's filesystem calls turn into.
+ *
+ * An open file is held whole in the worker and written back with a single
+ * `put` when it is closed, so `get` and `put` are called once per open file
+ * rather than once per read or write. Python's `flush()` does not reach the
+ * host, and a run that is terminated mid-write never gets to `put` at all.
+ */
 export interface SyncFileSystem {
   /**
    * Get a file or directory at a given path.
@@ -168,6 +176,8 @@ const methods = (
 
   type CustomNode = FS.FSNode & {
     timestamp?: number;
+    /** Set while a stream holds contents the host has not been told about. */
+    pendingSize?: number;
   };
 
   const isCustomNode = (node: FS.FSNode): node is CustomNode =>
@@ -175,19 +185,26 @@ const methods = (
 
   const modeOf = (entry: Entry) => (entry.directory ? DIR_MODE : FILE_MODE);
 
+  /**
+   * An open file is only written back when it is closed, so what a stream holds
+   * is more current than what the host would report.
+   */
+  const sizeOf = (node: FS.FSNode) =>
+    (node as CustomNode).pendingSize ??
+    syncResult(custom.stat({ path: realPath(node) })).size;
+
   const truncate = (node: FS.FSNode, size: number) => {
     if (!FS.isFile(node.mode)) throw new FS.ErrnoError(ERRNO_CODES["EINVAL"]);
     const path = realPath(node);
     writeBytes(path, resizeBytes(readBytes(path), size));
+    (node as CustomNode).pendingSize = undefined;
   };
 
   const nodeOps: FS.NodeOps = {
     getattr: (node) => {
       logCall("nodeOps.getattr", { node: node.name, id: node.id });
       const { id: ino, mode, rdev } = node;
-      const size = FS.isFile(mode)
-        ? syncResult(custom.stat({ path: realPath(node) })).size
-        : 0;
+      const size = FS.isFile(mode) ? sizeOf(node) : 0;
       const time = new Date(isCustomNode(node) ? node.timestamp! : Date.now());
       return {
         dev,
@@ -311,6 +328,7 @@ const methods = (
         fileData: truncating ? new Uint8Array() : readBytes(path),
         dirty: truncating,
       });
+      if (truncating) (stream.object as CustomNode).pendingSize = 0;
     },
 
     close: (stream) => {
@@ -321,6 +339,7 @@ const methods = (
         fileData: undefined,
         dirty: false,
       });
+      (stream.object as CustomNode).pendingSize = undefined;
       if (dirty && fileData !== undefined) writeBytes(path, fileData);
     },
 
@@ -339,7 +358,10 @@ const methods = (
       if (length <= 0) return 0;
       const fileData = grow(stream as CustomStream, position + length);
       fileData.set(buffer.subarray(offset, offset + length), position);
-      (stream.object as CustomNode).timestamp = Date.now();
+      Object.assign(stream.object as CustomNode, {
+        timestamp: Date.now(),
+        pendingSize: fileData.length,
+      });
       (stream as CustomStream).dirty = true;
       return length;
     },

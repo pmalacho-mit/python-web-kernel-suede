@@ -1,3 +1,15 @@
+"""Finds the external packages a run will need before it runs.
+
+`pyodide.code.find_imports` plus `loadPackagesFromImports` only sees the imports
+written in the source it is handed. A run whose entry point imports a local
+module, which imports another local module, which imports pandas, would reach
+that import at runtime with nothing installed. This walks the local modules
+first and reports what they need, along with the directories to put on sys.path.
+
+Being a walker over local files, it has to be kept working against the Pyodide
+release in use.
+"""
+
 import pyodide.code
 import os
 import sys
