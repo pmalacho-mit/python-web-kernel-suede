@@ -1,10 +1,11 @@
-import { AsyncMemory } from "./async-memory";
-import type { SyncFileSystem } from "./emscripten-fs";
+import type { AsyncMemory } from "./async-memory";
 import {
-  ObjectId,
-  ObjectProxyClient,
-  type ProxyMessages,
-} from "./object-proxy";
+  answering,
+  fileSystemMethods,
+  type SyncFileSystem,
+} from "./emscripten-fs";
+import { WorkerBridge, type BridgeMessages } from "./bridge";
+import { ObjectId, type ObjectProxyClient } from "./object-proxy";
 import { PyodideInstance } from "../pyodide/instance";
 import type { Typed } from "../utils";
 import { make, type Output } from "../output";
@@ -23,16 +24,10 @@ export namespace Kernel {
   };
   export type Requests = {
     initialize: {
-      asyncMemory: {
-        lockBuffer: SharedArrayBuffer;
-        dataBuffer: SharedArrayBuffer;
-        interruptBuffer: SharedArrayBuffer;
-      };
-      ids: {
-        filesystem: string;
-        getInput: string;
-        globalThis: string;
-      };
+      buffers: AsyncMemory.Buffers;
+      globalThisId: string;
+      /** Where Pyodide's runtime files are served from. */
+      indexURL?: string;
       /**
        * The workspace root path for this kernel
        * (assumed to be where all executed files are located)
@@ -54,7 +49,7 @@ export namespace Kernel {
     loaded: {};
     output: Output.Specific;
     finished: {};
-  } & ProxyMessages;
+  } & BridgeMessages;
 
   export type Request<T extends keyof Requests = keyof Requests> =
     Typed<Requests> & { type: T };
@@ -71,30 +66,19 @@ export namespace Kernel {
 
 const handler = {
   onInitialize: async (manager, data) => {
-    const asyncMemory = new AsyncMemory(
-      data.asyncMemory.lockBuffer,
-      data.asyncMemory.dataBuffer,
-      data.asyncMemory.interruptBuffer,
+    const bridge = new WorkerBridge(data.buffers, (message) =>
+      manager.postMessage(message),
     );
-    const proxy = new ObjectProxyClient(asyncMemory, (msg) =>
-      manager.postMessage(msg),
-    );
-    const input = proxy.getObjectProxy<() => string>(data.ids.getInput);
-    const asyncFs = proxy.getObjectProxy(data.ids.filesystem);
-    const syncFs: SyncFileSystem = {
-      get: (opts) => proxy.thenSync(asyncFs.get(opts)),
-      put: (opts) => proxy.thenSync(asyncFs.put(opts)),
-      delete: (opts) => proxy.thenSync(asyncFs.delete(opts)),
-      move: (opts) => proxy.thenSync(asyncFs.move(opts)),
-      listDirectory: (opts) => proxy.thenSync(asyncFs.listDirectory(opts)),
-    };
 
-    manager.proxy = proxy;
-    manager.input = input;
-    manager.syncFs = syncFs;
+    manager.proxy = bridge.objects;
+    manager.input = (prompt) => bridge.calls.call("input", "prompt", prompt);
+    manager.syncFs = answering(
+      bridge.calls.facade<SyncFileSystem>("fs", [...fileSystemMethods]),
+    );
     manager.pyodide = new PyodideInstance({
-      globalThisId: data.ids.globalThis,
-      interruptBuffer: asyncMemory.interrupter,
+      globalThisId: data.globalThisId,
+      interruptBuffer: bridge.memory.interrupter,
+      indexURL: data.indexURL,
     });
 
     await manager.pyodide.init(manager, data.root);

@@ -1,4 +1,6 @@
-import type { SyncFileSystem } from "./worker/emscripten-fs";
+import { contents, type Contents } from "./contents";
+import type { Entry, SyncFileSystem } from "./worker/emscripten-fs";
+import { awaited, type Awaitable, type SyncResult } from "./utils";
 
 export namespace FileSystem {
   export type SanitizeOptions = {
@@ -22,30 +24,48 @@ export namespace FileSystem {
   export type CreationOptions = Partial<SanitizeOptions> & {
     /** Log filesystem calls for debugging. */
     log?: boolean;
+    /**
+     * Hand everything Python writes to `put` as raw bytes.
+     *
+     * By default contents that are valid UTF-8 arrive as a string and
+     * everything else arrives as a `Uint8Array`.
+     */
+    binary?: boolean;
   };
 
   export type Get = (
     path: string,
-  ) => string | undefined | null | { directory: true };
+  ) => Awaitable<Contents | undefined | null | { directory: true }>;
 
-  export type Put = (path: string, value: string | null) => void;
+  export type Put = (path: string, value: Contents | null) => Awaitable<void>;
 
-  export type ListDirectory = (path: string) => string[];
+  export type ListDirectory = (
+    path: string,
+  ) => Awaitable<string[] | undefined | null>;
+
+  export type Stat = (path: string) => Awaitable<Entry | undefined | null>;
 
   export type Move = (request: {
     /** Source path to move from. */
     from: string;
     /** Destination path to move to. */
     to: string;
-  }) => void;
+  }) => Awaitable<void>;
 
-  export type Delete = (path: string) => void;
+  export type Delete = (path: string) => Awaitable<void>;
 
   export type Read = {
     /** Read file contents or directory marker for a path. */
     get: Get;
     /** List entries for a directory path. */
     listDirectory: ListDirectory;
+    /**
+     * Describe a path without producing its contents.
+     *
+     * Only worth providing when size is cheaper to answer than contents:
+     * without it, sizes are measured by reading the file.
+     */
+    stat?: Stat;
   };
 
   export type Write = {
@@ -58,42 +78,47 @@ export namespace FileSystem {
   };
 }
 
-type RootedFileSystem = SyncFileSystem & { root: string };
+/**
+ * The filesystem the kernel is given. It answers the same questions the worker
+ * asks, except that every answer may arrive in a promise: Python stays blocked
+ * until it does.
+ */
+export type HostFileSystem = {
+  [K in keyof SyncFileSystem]: (
+    ...args: Parameters<SyncFileSystem[K]>
+  ) => Awaitable<ReturnType<SyncFileSystem[K]>>;
+};
+
+type RootedFileSystem = HostFileSystem & { root: string };
 
 export const defaultRoot = "/home/pyodide";
+
+const ok = <T>(data: T): SyncResult<T> => ({ ok: true, data });
+
+const notFound = (path: string): SyncResult<never> => ({
+  ok: false,
+  status: 404,
+  error: new Error(`Not found: ${path}`),
+});
 
 /**
  * In-memory filesystem adapter that returns not-found for reads and no-ops
  * for writes.
  */
-export const empty = (root = defaultRoot, log = false): RootedFileSystem =>
-  ({
+export const empty = (root = defaultRoot, log = false): RootedFileSystem => {
+  const trace = (name: string, opts: unknown) => {
+    if (log) console.log(`fs.${name} invoked with:`, opts);
+  };
+  return {
     root,
-    get(opts: { path: string }) {
-      if (log) console.log("fs.get invoked with:", opts);
-      return {
-        ok: false as const,
-        status: 404,
-        error: new Error("Not found"),
-      };
-    },
-    put(opts: { path: string; value: string | null }) {
-      if (log) console.log("fs.put invoked with:", opts);
-      return { ok: true as const, data: undefined };
-    },
-    delete(opts: { path: string }) {
-      if (log) console.log("fs.delete invoked with:", opts);
-      return { ok: true as const, data: undefined };
-    },
-    move(opts: { path: string; newPath: string }) {
-      if (log) console.log("fs.move invoked with:", opts);
-      return { ok: true as const, data: undefined };
-    },
-    listDirectory(opts: { path: string }) {
-      if (log) console.log("fs.listDirectory invoked with:", opts);
-      return { ok: true as const, data: [] };
-    },
-  }) satisfies RootedFileSystem;
+    get: (opts) => (trace("get", opts), notFound(opts.path)),
+    stat: (opts) => (trace("stat", opts), notFound(opts.path)),
+    put: (opts) => (trace("put", opts), ok(undefined)),
+    delete: (opts) => (trace("delete", opts), ok(undefined)),
+    move: (opts) => (trace("move", opts), ok(undefined)),
+    listDirectory: (opts) => (trace("listDirectory", opts), ok([])),
+  };
+};
 
 /** Normalize file paths according to sanitize options. */
 export const sanitizePath = (
@@ -114,6 +139,37 @@ export const setDefaults: (
   options.removeLeadingSlash ??= true;
 };
 
+const isDirectoryMarker = (value: unknown): value is { directory: true } =>
+  typeof value === "object" && value !== null && "directory" in value;
+
+const isContents = (value: unknown): value is Contents =>
+  typeof value === "string" || value instanceof Uint8Array;
+
+/** Reads only count as answered when they produced contents or a directory. */
+const answered = (
+  value: Awaited<ReturnType<FileSystem.Get>>,
+): SyncResult<Contents | null> | undefined => {
+  if (isContents(value)) return ok(value);
+  if (isDirectoryMarker(value)) return ok(null);
+  return undefined;
+};
+
+const entryOf = (value: Contents | null): Entry =>
+  value === null
+    ? { size: 0, directory: true }
+    : { size: contents.byteLength(value), directory: false };
+
+const measuredByReading =
+  (get: HostFileSystem["get"]): HostFileSystem["stat"] =>
+  (opts) =>
+    awaited.map(get(opts), (result) =>
+      result.ok ? ok(entryOf(result.data)) : result,
+    );
+
+const sanitizer = (options: FileSystem.SanitizeOptions) => (opts: {
+  path: string;
+}) => sanitizePath(opts.path, options);
+
 /**
  * Create a read-only filesystem facade layered on top of an optional base
  * filesystem implementation.
@@ -123,22 +179,29 @@ export const readOnly = (
   base?: RootedFileSystem,
 ): RootedFileSystem => {
   setDefaults(options);
-  const { get, listDirectory, root, log } = options;
-  base ??= empty(root, log);
+  const { get, listDirectory, stat } = options;
+  const fallback = base ?? empty(options.root, options.log);
+  const at = sanitizer(options);
+
+  const reader: RootedFileSystem = {
+    ...fallback,
+    get: (opts) =>
+      awaited.map(get(at(opts)), (value) => answered(value) ?? fallback.get(opts)),
+    listDirectory: (opts) =>
+      awaited.map(listDirectory(at(opts)), (names) =>
+        Array.isArray(names) ? ok(names) : fallback.listDirectory(opts),
+      ),
+  };
+
+  const measured = measuredByReading(reader.get);
   return {
-    ...base,
-    listDirectory(opts) {
-      const data = listDirectory(sanitizePath(opts.path, options));
-      if (Array.isArray(data)) return { ok: true as const, data };
-      else return base.listDirectory(opts);
-    },
-    get(opts) {
-      const data = get(sanitizePath(opts.path, options));
-      if (typeof data === "string") return { ok: true as const, data };
-      if (data && typeof data === "object" && "directory" in data)
-        return { ok: true as const, data: null };
-      else return base.get(opts);
-    },
+    ...reader,
+    stat: stat
+      ? (opts) =>
+          awaited.map(stat(at(opts)), (entry) =>
+            entry ? ok(entry) : measured(opts),
+          )
+      : measured,
   };
 };
 
@@ -151,28 +214,27 @@ export const writeOnly = (
   base?: RootedFileSystem,
 ): RootedFileSystem => {
   setDefaults(options);
-  const { root, log, put, move, delete: del } = options;
-  base ??= empty(root, log);
+  const { put, move, delete: remove, binary = false } = options;
+  const fallback = base ?? empty(options.root, options.log);
+  const at = sanitizer(options);
+  const done = (value: Awaitable<void>) => awaited.map(value, () => ok(undefined));
+
+  /** Text written by Python stays text unless raw bytes were asked for. */
+  const written = (value: Contents | null) =>
+    value === null || binary || contents.isText(value)
+      ? value
+      : contents.fromBytes(value);
+
   return {
-    ...base,
+    ...fallback,
     move: move
-      ? ({ path, newPath }) => {
-          const from = sanitizePath(path, options);
-          const to = sanitizePath(newPath, options);
-          move({ from, to });
-          return { ok: true as const, data: undefined };
-        }
-      : base.move,
-    delete: del
-      ? ({ path }) => {
-          del(sanitizePath(path, options));
-          return { ok: true as const, data: undefined };
-        }
-      : base.delete,
-    put({ path, value }) {
-      put(sanitizePath(path, options), value);
-      return { ok: true as const, data: undefined };
-    },
+      ? (opts) =>
+          done(
+            move({ from: at(opts), to: sanitizePath(opts.newPath, options) }),
+          )
+      : fallback.move,
+    delete: remove ? (opts) => done(remove(at(opts))) : fallback.delete,
+    put: (opts) => done(put(at(opts), written(opts.value))),
   };
 };
 
@@ -185,15 +247,30 @@ export const readWrite = (
   return readOnly(options, writeOnly(options, base));
 };
 
+const MIME_TYPES: [suffix: string, type: string][] = [
+  [".gif", "image/gif"],
+  [".png", "image/png"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".webp", "image/webp"],
+  [".bmp", "image/bmp"],
+  [".ico", "image/x-icon"],
+  [".svg", "image/svg+xml"],
+  [".pdf", "application/pdf"],
+  [".json", "application/json"],
+  [".csv", "text/csv"],
+  [".txt", "text/plain"],
+  [".html", "text/html"],
+  [".wav", "audio/wav"],
+  [".mp3", "audio/mpeg"],
+  [".mp4", "video/mp4"],
+  [".zip", "application/zip"],
+];
+
 export const inferMimeType = (path: string) => {
   const lowerPath = path.toLowerCase();
-  if (lowerPath.endsWith(".gif")) return "image/gif";
-  if (lowerPath.endsWith(".png")) return "image/png";
-  if (lowerPath.endsWith(".jpg") || lowerPath.endsWith(".jpeg"))
-    return "image/jpeg";
-  if (lowerPath.endsWith(".webp")) return "image/webp";
-  if (lowerPath.endsWith(".svg")) return "image/svg+xml";
-  return "application/octet-stream";
+  const match = MIME_TYPES.find(([suffix]) => lowerPath.endsWith(suffix));
+  return match?.[1] ?? "application/octet-stream";
 };
 
 export default {
