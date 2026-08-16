@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { codec, CodecError, KNOWN_SYMBOLS, type References } from "../release/worker/codec";
+import {
+  codec,
+  CodecError,
+  KNOWN_SYMBOLS,
+  type References,
+} from "../release/worker/codec";
 
 const roundTrip = <T>(value: T, references?: References) =>
   codec.decode(codec.encode(value, references), references);
@@ -9,7 +14,10 @@ const allByteValues = Uint8Array.from({ length: 256 }, (_, index) => index);
 /** Comparing megabytes element by element is slower than the codec itself. */
 const digest = (bytes: Uint8Array) => ({
   length: bytes.byteLength,
-  checksum: bytes.reduce((sum, byte, index) => (sum + byte * (index + 1)) % 2 ** 32, 0),
+  checksum: bytes.reduce(
+    (sum, byte, index) => (sum + byte * (index + 1)) % 2 ** 32,
+    0,
+  ),
 });
 
 const registry = (): References => {
@@ -100,12 +108,17 @@ describe("binary", () => {
   });
 
   it("round trips bytes that are not valid utf-8", () => {
-    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const png = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    ]);
     expect(roundTrip(png)).toEqual(png);
   });
 
   it("round trips a megabyte of bytes", () => {
-    const value = Uint8Array.from({ length: 1 << 20 }, (_, i) => (i * 31) % 256);
+    const value = Uint8Array.from(
+      { length: 1 << 20 },
+      (_, i) => (i * 31) % 256,
+    );
     expect(digest(roundTrip(value) as Uint8Array)).toEqual(digest(value));
   });
 
@@ -248,7 +261,9 @@ describe("framing", () => {
 
   it("rejects an unknown tag", () => {
     const encoded = codec.encode(true);
-    expect(() => codec.decode(Uint8Array.of(encoded[0], 200))).toThrow(CodecError);
+    expect(() => codec.decode(Uint8Array.of(encoded[0], 200))).toThrow(
+      CodecError,
+    );
   });
 
   it("rejects a payload from a different version of the codec", () => {

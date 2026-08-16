@@ -20,9 +20,8 @@ const start = (
 ) => {
   const bridge = new HostBridge(targets, SMALL_CAPACITY);
   const rootId = bridge.objects.registerRootObject(root);
-  const worker = new Worker(new URL("./bridge.fixture.ts", import.meta.url), {
+  const worker = new Worker(new URL("./bridge.worker.mjs", import.meta.url), {
     workerData: { buffers: bridge.buffers, rootId, patience },
-    execArgv: ["--import", "tsx"],
   });
 
   const pending = new Map<number, (outcome: Outcome) => void>();
@@ -31,6 +30,21 @@ const start = (
   worker.on("message", (message: any) => {
     if (bridge.handle(message)) return;
     pending.get(message.id)?.(message as Outcome);
+  });
+
+  /**
+   * A worker that cannot start answers nothing, which would otherwise show up
+   * as every test in the file waiting out its timeout.
+   */
+  worker.on("error", (error) => {
+    for (const answer of pending.values())
+      answer({
+        type: "outcome",
+        id: -1,
+        ok: false,
+        error: `worker failed to start: ${error.message}`,
+      });
+    pending.clear();
   });
 
   const run = (task: Request) =>
@@ -74,14 +88,24 @@ const digest = (bytes: unknown) => {
   const view = bytes as Uint8Array;
   return {
     length: view?.byteLength,
-    checksum: view?.reduce((sum, byte, i) => (sum + byte * (i + 1)) % 2 ** 32, 0),
+    checksum: view?.reduce(
+      (sum, byte, i) => (sum + byte * (i + 1)) % 2 ** 32,
+      0,
+    ),
   };
 };
 
 describe("calls into the host", () => {
   it("answers a synchronous host function", async () => {
     const { value } = harness({ math: { double: (n: number) => n * 2 } });
-    expect(await value({ kind: "call", target: "math", method: "double", args: [21] })).toBe(42);
+    expect(
+      await value({
+        kind: "call",
+        target: "math",
+        method: "double",
+        args: [21],
+      }),
+    ).toBe(42);
   });
 
   it("answers a host function that resolves later", async () => {
@@ -94,7 +118,12 @@ describe("calls into the host", () => {
       },
     });
     expect(
-      await value({ kind: "call", target: "slow", method: "answer", args: ["life"] }),
+      await value({
+        kind: "call",
+        target: "slow",
+        method: "answer",
+        args: ["life"],
+      }),
     ).toBe("life: 42");
   });
 
@@ -106,7 +135,9 @@ describe("calls into the host", () => {
         },
       },
     });
-    expect(await run({ kind: "call", target: "broken", method: "boom", args: [] })).toMatchObject({
+    expect(
+      await run({ kind: "call", target: "broken", method: "boom", args: [] }),
+    ).toMatchObject({
       ok: false,
       error: "host exploded",
     });
@@ -116,7 +147,9 @@ describe("calls into the host", () => {
     const { run } = harness({
       broken: { boom: async () => Promise.reject(new Error("rejected later")) },
     });
-    expect(await run({ kind: "call", target: "broken", method: "boom", args: [] })).toMatchObject({
+    expect(
+      await run({ kind: "call", target: "broken", method: "boom", args: [] }),
+    ).toMatchObject({
       ok: false,
       error: "rejected later",
     });
@@ -124,7 +157,12 @@ describe("calls into the host", () => {
 
   it("names a method the host does not have", async () => {
     const { run } = harness({ math: {} });
-    const outcome = await run({ kind: "call", target: "math", method: "double", args: [1] });
+    const outcome = await run({
+      kind: "call",
+      target: "math",
+      method: "double",
+      args: [1],
+    });
     expect(outcome.error).toContain("math.double");
   });
 
@@ -154,7 +192,12 @@ describe("calls into the host", () => {
     );
     await run({ kind: "call", target: "slow", method: "forever", args: [] });
     expect(
-      await value({ kind: "call", target: "math", method: "double", args: [4] }),
+      await value({
+        kind: "call",
+        target: "math",
+        method: "double",
+        args: [4],
+      }),
     ).toBe(8);
   });
 
@@ -168,7 +211,14 @@ describe("calls into the host", () => {
       },
     });
     await run({ kind: "call", target: "math", method: "boom", args: [] });
-    expect(await value({ kind: "call", target: "math", method: "double", args: [4] })).toBe(8);
+    expect(
+      await value({
+        kind: "call",
+        target: "math",
+        method: "double",
+        args: [4],
+      }),
+    ).toBe(8);
   });
 });
 
@@ -178,7 +228,12 @@ describe("payloads", () => {
     async (length) => {
       const bytes = pattern(length);
       const { value } = harness({ assets: { read: () => bytes } });
-      const received = await value({ kind: "call", target: "assets", method: "read", args: [] });
+      const received = await value({
+        kind: "call",
+        target: "assets",
+        method: "read",
+        args: [],
+      });
       expect(digest(received)).toEqual(digest(bytes));
     },
   );
@@ -195,7 +250,12 @@ describe("payloads", () => {
     });
     const bytes = pattern(70_000);
     expect(
-      await value({ kind: "call", target: "assets", method: "write", args: [bytes] }),
+      await value({
+        kind: "call",
+        target: "assets",
+        method: "write",
+        args: [bytes],
+      }),
     ).toBe(70_000);
     expect(digest(received[0])).toEqual(digest(bytes));
   });
@@ -203,15 +263,17 @@ describe("payloads", () => {
   it("returns text of every shape intact", async () => {
     const text = `🐍 emoji, 日本語, café, ${"padding ".repeat(5000)}`;
     const { value } = harness({ assets: { read: () => text } });
-    expect(await value({ kind: "call", target: "assets", method: "read", args: [] })).toBe(text);
+    expect(
+      await value({ kind: "call", target: "assets", method: "read", args: [] }),
+    ).toBe(text);
   });
 
   it("returns structures holding bytes and text together", async () => {
     const answer = { ok: true, data: pattern(5000), name: "sprite.png" };
     const { value } = harness({ assets: { read: () => answer } });
-    expect(await value({ kind: "call", target: "assets", method: "read", args: [] })).toEqual(
-      answer,
-    );
+    expect(
+      await value({ kind: "call", target: "assets", method: "read", args: [] }),
+    ).toEqual(answer);
   });
 });
 
@@ -229,7 +291,9 @@ describe("proxied objects", () => {
       readonly ticks = 7;
     })(),
     describes: (value: unknown) =>
-      value === root.clock ? "the same object" : `a copy: ${JSON.stringify(value)}`,
+      value === root.clock
+        ? "the same object"
+        : `a copy: ${JSON.stringify(value)}`,
     greet: (name: string) => `hello ${name}`,
     bytes: () => pattern(3000),
     later: async () => {
@@ -254,40 +318,58 @@ describe("proxied objects", () => {
   it("hands a proxied object back to the host as itself", async () => {
     const { value } = harness({}, root);
     expect(
-      await value({ kind: "reflect", path: ["describes"], argument: ["clock"] }),
+      await value({
+        kind: "reflect",
+        path: ["describes"],
+        argument: ["clock"],
+      }),
     ).toBe("the same object");
   });
 
   it("copies a plain object rather than proxying it", async () => {
     const { value } = harness({}, root);
     expect(
-      await value({ kind: "reflect", path: ["describes"], argument: ["nested"] }),
+      await value({
+        kind: "reflect",
+        path: ["describes"],
+        argument: ["nested"],
+      }),
     ).toContain("a copy");
   });
 
   it("reads through nested objects", async () => {
     const { value } = harness({}, root);
-    expect(await value({ kind: "read", path: ["nested", "deep", "count"] })).toBe(3);
+    expect(
+      await value({ kind: "read", path: ["nested", "deep", "count"] }),
+    ).toBe(3);
   });
 
   it("calls a function", async () => {
     const { value } = harness({}, root);
-    expect(await value({ kind: "apply", path: ["greet"], args: ["world"] })).toBe("hello world");
+    expect(
+      await value({ kind: "apply", path: ["greet"], args: ["world"] }),
+    ).toBe("hello world");
   });
 
   it("carries bytes back from a call", async () => {
     const { value } = harness({}, root);
-    expect(await value({ kind: "apply", path: ["bytes"], args: [] })).toEqual(pattern(3000));
+    expect(await value({ kind: "apply", path: ["bytes"], args: [] })).toEqual(
+      pattern(3000),
+    );
   });
 
   it("blocks on a returned promise", async () => {
     const { value } = harness({}, root);
-    expect(await value({ kind: "awaited", path: ["later"], args: [] })).toBe("eventually");
+    expect(await value({ kind: "awaited", path: ["later"], args: [] })).toBe(
+      "eventually",
+    );
   });
 
   it("raises what the host threw instead of hanging", async () => {
     const { run } = harness({}, root);
-    expect(await run({ kind: "apply", path: ["explode"], args: [] })).toMatchObject({
+    expect(
+      await run({ kind: "apply", path: ["explode"], args: [] }),
+    ).toMatchObject({
       ok: false,
       error: "proxy exploded",
     });
@@ -306,8 +388,12 @@ describe("a filesystem answering with promises", () => {
       files,
       fs: readWrite({
         root: "/home/pyodide",
-        get: (path) => later(files.get(path) ?? (path === "" ? { directory: true } : undefined)),
-        listDirectory: (path) => later(path === "" ? [...files.keys()] : undefined),
+        get: (path) =>
+          later(
+            files.get(path) ?? (path === "" ? { directory: true } : undefined),
+          ),
+        listDirectory: (path) =>
+          later(path === "" ? [...files.keys()] : undefined),
         put: async (path, value) => {
           if (value === null) files.delete(path);
           else files.set(path, value);
@@ -317,7 +403,9 @@ describe("a filesystem answering with promises", () => {
     };
   };
 
-  const fileSystem = (task: Omit<Extract<Task, { kind: "fileSystem" }>, "id" | "kind">) => ({
+  const fileSystem = (
+    task: Omit<Extract<Task, { kind: "fileSystem" }>, "id" | "kind">,
+  ) => ({
     kind: "fileSystem" as const,
     ...task,
   });
@@ -325,29 +413,53 @@ describe("a filesystem answering with promises", () => {
   it("reads text a promise produced", async () => {
     const { fs } = store();
     const { value } = harness({ fs });
-    expect(await value(fileSystem({ method: "get", args: [{ path: "/home/pyodide/main.py" }] })))
-      .toEqual({ ok: true, data: "print('hi')" });
+    expect(
+      await value(
+        fileSystem({
+          method: "get",
+          args: [{ path: "/home/pyodide/main.py" }],
+        }),
+      ),
+    ).toEqual({ ok: true, data: "print('hi')" });
   });
 
   it("reads bytes larger than the shared memory", async () => {
     const { fs } = store();
     const { value } = harness({ fs });
-    expect(await value(fileSystem({ method: "get", args: [{ path: "/home/pyodide/logo.png" }] })))
-      .toEqual({ ok: true, data: pattern(9000) });
+    expect(
+      await value(
+        fileSystem({
+          method: "get",
+          args: [{ path: "/home/pyodide/logo.png" }],
+        }),
+      ),
+    ).toEqual({ ok: true, data: pattern(9000) });
   });
 
   it("reports a missing file rather than throwing", async () => {
     const { fs } = store();
     const { value } = harness({ fs });
-    expect(await value(fileSystem({ method: "get", args: [{ path: "/home/pyodide/nope.py" }] })))
-      .toMatchObject({ ok: false, status: 404 });
+    expect(
+      await value(
+        fileSystem({
+          method: "get",
+          args: [{ path: "/home/pyodide/nope.py" }],
+        }),
+      ),
+    ).toMatchObject({ ok: false, status: 404 });
   });
 
   it("measures a file without transferring it", async () => {
     const { fs } = store();
     const { value } = harness({ fs });
-    expect(await value(fileSystem({ method: "stat", args: [{ path: "/home/pyodide/logo.png" }] })))
-      .toEqual({ ok: true, data: { size: 9000, directory: false } });
+    expect(
+      await value(
+        fileSystem({
+          method: "stat",
+          args: [{ path: "/home/pyodide/logo.png" }],
+        }),
+      ),
+    ).toEqual({ ok: true, data: { size: 9000, directory: false } });
   });
 
   it("writes bytes through to the host", async () => {
@@ -355,7 +467,10 @@ describe("a filesystem answering with promises", () => {
     const { value } = harness({ fs });
     const bytes = pattern(12_345);
     await value(
-      fileSystem({ method: "put", args: [{ path: "/home/pyodide/out.bin", value: bytes }] }),
+      fileSystem({
+        method: "put",
+        args: [{ path: "/home/pyodide/out.bin", value: bytes }],
+      }),
     );
     expect(contents.equal(files.get("out.bin")!, bytes)).toBe(true);
   });
@@ -363,8 +478,14 @@ describe("a filesystem answering with promises", () => {
   it("lists a directory", async () => {
     const { fs } = store();
     const { value } = harness({ fs });
-    expect(await value(fileSystem({ method: "listDirectory", args: [{ path: "/home/pyodide" }] })))
-      .toEqual({ ok: true, data: ["main.py", "logo.png"] });
+    expect(
+      await value(
+        fileSystem({
+          method: "listDirectory",
+          args: [{ path: "/home/pyodide" }],
+        }),
+      ),
+    ).toEqual({ ok: true, data: ["main.py", "logo.png"] });
   });
 });
 
@@ -392,12 +513,23 @@ const IMPATIENT = { interval: 25, limit: 100 };
 
 describe("a host that answers too late", () => {
   const late = <T>(value: T) =>
-    new Promise<T>((resolve) => setTimeout(() => resolve(value), SLOWER_THAN_PATIENCE));
+    new Promise<T>((resolve) =>
+      setTimeout(() => resolve(value), SLOWER_THAN_PATIENCE),
+    );
 
   it("leaves the host unharmed when its call is answered too late", async () => {
-    const { run } = harness({ slow: { late: () => late("eventually") } }, {}, IMPATIENT);
+    const { run } = harness(
+      { slow: { late: () => late("eventually") } },
+      {},
+      IMPATIENT,
+    );
     const raised = await watchingTheHost(async () => {
-      const outcome = await run({ kind: "call", target: "slow", method: "late", args: [] });
+      const outcome = await run({
+        kind: "call",
+        target: "slow",
+        method: "late",
+        args: [],
+      });
       expect(outcome.error).toContain("did not answer");
     });
     expect(raised).toEqual([]);
@@ -415,14 +547,22 @@ describe("a host that answers too late", () => {
 
   it("still answers the next call", async () => {
     const { run, value } = harness(
-      { slow: { late: () => late("eventually") }, math: { double: (n: number) => n * 2 } },
+      {
+        slow: { late: () => late("eventually") },
+        math: { double: (n: number) => n * 2 },
+      },
       {},
       IMPATIENT,
     );
     await run({ kind: "call", target: "slow", method: "late", args: [] });
     await new Promise((resolve) => setTimeout(resolve, SLOWER_THAN_PATIENCE));
     expect(
-      await value({ kind: "call", target: "math", method: "double", args: [4] }),
+      await value({
+        kind: "call",
+        target: "math",
+        method: "double",
+        args: [4],
+      }),
     ).toBe(8);
   });
 });
@@ -449,7 +589,9 @@ describe("reference lifetimes", () => {
     const objects = host();
     const value = { kind: "not plain" };
     Object.setPrototypeOf(value, { marker: true });
-    expect(objects.references.decode(objects.references.encode(value))).toBe(value);
+    expect(objects.references.decode(objects.references.encode(value))).toBe(
+      value,
+    );
   });
 
   it("forgets an id the worker has finished with", () => {

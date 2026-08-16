@@ -7,7 +7,7 @@
   const AWKWARD = [
     "tab\there",
     "windows\r\nlines",
-    'quotes "double" \'single\'',
+    "quotes \"double\" 'single'",
     "backslash \\ and 🐍",
   ].join("\n");
 

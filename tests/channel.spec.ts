@@ -18,7 +18,11 @@ const loopback = (
   const memory = new AsyncMemory({ capacity });
   const host = new ChannelHost(memory);
   let answer: () => void = () => {};
-  const worker = new ChannelWorker(memory, () => host.sendNextChunk(), patience);
+  const worker = new ChannelWorker(
+    memory,
+    () => host.sendNextChunk(),
+    patience,
+  );
   return {
     capacity,
     host,
@@ -128,6 +132,31 @@ describe("a host that never answers", () => {
     expect(() =>
       channel.worker.request(() => channel.host.memory.interrupt()),
     ).toThrow(InterruptedError);
+  });
+
+  it("ignores an answer belonging to a request it already gave up on", () => {
+    const channel = loopback();
+    const { memory } = channel.host;
+
+    /** What a host mid-copy does after the worker has moved on. */
+    const answerSomethingElse = () => {
+      memory.writeSize(16);
+      memory.writeAnswer(memory.request - 1);
+      memory.unlockSize();
+    };
+
+    expect(() => channel.worker.request(answerSomethingElse)).toThrow(
+      UnansweredError,
+    );
+  });
+
+  it("takes the answer that belongs to the request it is waiting on", () => {
+    const channel = loopback();
+    const { memory } = channel.host;
+
+    channel.respondWith(pattern(24));
+    expect(channel.receive()).toEqual(pattern(24));
+    expect(memory.answer).toBe(memory.request - 1);
   });
 
   it("stops waiting on a request the moment it gives up on it", () => {

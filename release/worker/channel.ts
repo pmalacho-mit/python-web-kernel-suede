@@ -81,6 +81,7 @@ export class ChannelHost {
       sent + 1 < slice.count ? { payload, sent: sent + 1, request } : undefined;
 
     /** The worker can stop waiting between the check and the write. */
+    this.memory.writeAnswer(request);
     if (!this.memory.unlockSize()) this.abandon();
   }
 }
@@ -106,10 +107,10 @@ export class ChannelWorker {
       memory.lockWorker();
       memory.lockSize();
       memory.writeSize(0);
-      memory.beginRequest();
+      const request = memory.beginRequest();
       send();
-      this.awaitAnswer();
-      return this.receive();
+      this.awaitAnswer(request);
+      return this.receive(request);
     } finally {
       memory.endRequest();
       memory.forceUnlockSize();
@@ -123,33 +124,36 @@ export class ChannelWorker {
    * Surfacing after a while lets the interrupt be seen and turned into an
    * exception Python can catch.
    */
-  private awaitAnswer() {
+  private awaitAnswer(request: number) {
     const { interval, limit } = this.patience;
     for (let waited = 0; waited < limit; waited += interval) {
-      if (this.memory.waitForSize(interval) !== "timed-out") return;
-      if (this.memory.interrupted)
-        throw new InterruptedError("Interrupted while waiting for the host");
+      if (this.memory.waitForSize(interval) === "timed-out") {
+        if (this.memory.interrupted)
+          throw new InterruptedError("Interrupted while waiting for the host");
+        continue;
+      }
+      if (this.memory.answer === request) return;
+      /** An answer to something this worker already gave up on. Keep waiting. */
+      this.memory.lockSize();
     }
-    throw new UnansweredError(
-      `The host did not answer within ${limit}ms`,
-    );
+    throw new UnansweredError(`The host did not answer within ${limit}ms`);
   }
 
-  private receive() {
+  private receive(request: number) {
     const total = this.memory.readSize();
     const slice = slices(total, this.memory.memory.byteLength);
     const payload = new Uint8Array(total);
     for (let index = 0; index < slice.count; index++) {
-      if (index > 0) this.awaitNextChunk();
+      if (index > 0) this.awaitNextChunk(request);
       const [start, end] = [slice.start(index), slice.end(index)];
       payload.set(this.memory.memory.subarray(0, end - start), start);
     }
     return payload;
   }
 
-  private awaitNextChunk() {
+  private awaitNextChunk(request: number) {
     this.memory.lockSize();
     this.requestNextChunk();
-    this.awaitAnswer();
+    this.awaitAnswer(request);
   }
 }

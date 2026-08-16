@@ -63,7 +63,7 @@ print("written")
       [
         'with open("data.bin", "rb") as f:',
         "    data = f.read()",
-        'print(len(data), sum(data), data[:4].hex(), data[-1])',
+        "print(len(data), sum(data), data[:4].hex(), data[-1])",
       ].join("\n"),
     );
 

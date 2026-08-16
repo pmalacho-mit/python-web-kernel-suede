@@ -1,4 +1,9 @@
-import { Kernel, type Awaitable, type Contents, type Output } from "../../../release";
+import {
+  Kernel,
+  type Awaitable,
+  type Contents,
+  type Output,
+} from "../../../release";
 
 export type Files = Map<string, Contents>;
 
@@ -42,7 +47,8 @@ export const inMemoryKernel = ({
   pyodide = "bundled",
 }: HarnessOptions = {}) => {
   const store: Files = new Map(Object.entries(files));
-  const answer = <T>(value: T): Awaitable<T> => (delayed ? delay(value) : value);
+  const answer = <T>(value: T): Awaitable<T> =>
+    delayed ? delay(value) : value;
 
   const isDirectory = (path: string) =>
     path === "" || [...store.keys()].some((key) => key.startsWith(`${path}/`));
@@ -112,7 +118,10 @@ export const bytes = {
     Uint8Array.from({ length }, (_, index) => (index * 13 + 7) % 256),
   digest: (value: Uint8Array | undefined) => ({
     length: value?.byteLength,
-    checksum: value?.reduce((sum, byte, i) => (sum + byte * (i + 1)) % 2 ** 32, 0),
+    checksum: value?.reduce(
+      (sum, byte, i) => (sum + byte * (i + 1)) % 2 ** 32,
+      0,
+    ),
   }),
 };
 

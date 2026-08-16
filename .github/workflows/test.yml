@@ -1,0 +1,33 @@
+name: test
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The bridge runs its worker half under a real worker thread, which has
+        # been sensitive to the Node patch version. Cover both supported majors.
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run check
+
+      # A worker that cannot start reports as an unhandled error rather than a
+      # failed assertion, so the run has to fail on those too.
+      - name: Run tests
+        run: npm test

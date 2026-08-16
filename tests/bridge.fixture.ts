@@ -9,12 +9,23 @@ import type { SyncFileSystem } from "../release/worker/emscripten-fs";
  * the blocking protocol exactly as the kernel worker does.
  */
 export type Task =
-  | { id: number; kind: "call"; target: string; method: string; args: unknown[] }
+  | {
+      id: number;
+      kind: "call";
+      target: string;
+      method: string;
+      args: unknown[];
+    }
   | { id: number; kind: "read"; path: string[] }
   | { id: number; kind: "apply"; path: string[]; args: unknown[] }
   | { id: number; kind: "awaited"; path: string[]; args: unknown[] }
   | { id: number; kind: "reflect"; path: string[]; argument: string[] }
-  | { id: number; kind: "fileSystem"; method: keyof SyncFileSystem; args: unknown[] };
+  | {
+      id: number;
+      kind: "fileSystem";
+      method: keyof SyncFileSystem;
+      args: unknown[];
+    };
 
 export type Outcome = {
   type: "outcome";
@@ -43,7 +54,8 @@ const fileSystem = bridge.calls.facade<SyncFileSystem>("fs", [
   "listDirectory",
 ]);
 
-const walk = (path: string[]) => path.reduce<any>((value, key) => value[key], root);
+const walk = (path: string[]) =>
+  path.reduce<any>((value, key) => value[key], root);
 
 const applyAt = (path: string[], args: unknown[]) => {
   const owner = walk(path.slice(0, -1));
@@ -57,8 +69,7 @@ const perform = (task: Task): unknown => {
   if (task.kind === "apply") return applyAt(task.path, task.args);
   if (task.kind === "awaited")
     return bridge.objects.thenSync(applyAt(task.path, task.args));
-  if (task.kind === "reflect")
-    return applyAt(task.path, [walk(task.argument)]);
+  if (task.kind === "reflect") return applyAt(task.path, [walk(task.argument)]);
   return (fileSystem[task.method] as any)(...task.args);
 };
 
@@ -67,6 +78,11 @@ parentPort!.on("message", (task: Task) => {
   post(
     result.ok
       ? { type: "outcome", id: task.id, ok: true, value: result.value }
-      : { type: "outcome", id: task.id, ok: false, error: result.error.message },
+      : {
+          type: "outcome",
+          id: task.id,
+          ok: false,
+          error: result.error.message,
+        },
   );
 });

@@ -31,7 +31,14 @@ const emscripten = () => ({
     isFile: (mode: number) => mode === FILE_MODE,
     isDir: (mode: number) => mode === DIR_MODE,
     createNode: (parent: any, name: string, mode: number) => {
-      const node: any = { id: 1, name, mode, rdev: 1, parent, mount: { opts: { root: "" } } };
+      const node: any = {
+        id: 1,
+        name,
+        mode,
+        rdev: 1,
+        parent,
+        mount: { opts: { root: "" } },
+      };
       node.parent ??= node;
       node.mount = parent?.mount ?? node.mount;
       return node;
@@ -79,7 +86,8 @@ const store = (initial: [string, Contents | null][] = []) => {
       files.delete(path);
       return ok(undefined);
     },
-    listDirectory: () => ok([...files.keys()].map((key) => key.replace(/^\//, ""))),
+    listDirectory: () =>
+      ok([...files.keys()].map((key) => key.replace(/^\//, ""))),
   };
   return { files, calls, fs };
 };
@@ -111,7 +119,11 @@ const readAll = (mount: ReturnType<typeof mounted>, name: string) => {
   return buffer.subarray(0, read);
 };
 
-const write = (mount: ReturnType<typeof mounted>, name: string, bytes: Uint8Array) => {
+const write = (
+  mount: ReturnType<typeof mounted>,
+  name: string,
+  bytes: Uint8Array,
+) => {
   const stream = mount.open(name, O_TRUNC);
   mount.streamOps.write!(stream, bytes, 0, bytes.length, 0);
   mount.streamOps.close!(stream);
@@ -220,7 +232,13 @@ describe("metadata", () => {
     const node = mount.nodeOps.lookup(mount.root, "draft.txt");
     const stream: any = { object: node, flags: 0, position: 0 };
     mount.streamOps.open!(stream);
-    mount.streamOps.write!(stream, utf8.encode("written but not closed"), 0, 22, 0);
+    mount.streamOps.write!(
+      stream,
+      utf8.encode("written but not closed"),
+      0,
+      22,
+      0,
+    );
     expect(mount.nodeOps.getattr(node).size).toBe(22);
   });
 
@@ -241,7 +259,9 @@ describe("metadata", () => {
 
   it("raises for a path that is not there", () => {
     const mount = mounted();
-    expect(() => mount.nodeOps.lookup(mount.root, "ghost.py")).toThrow(ErrnoError);
+    expect(() => mount.nodeOps.lookup(mount.root, "ghost.py")).toThrow(
+      ErrnoError,
+    );
   });
 
   it("truncates a file to a smaller size", () => {
@@ -259,7 +279,10 @@ describe("metadata", () => {
   });
 
   it("lists a directory with the implicit entries", () => {
-    const mount = mounted([["a.py", ""], ["b.py", ""]]);
+    const mount = mounted([
+      ["a.py", ""],
+      ["b.py", ""],
+    ]);
     expect(mount.nodeOps.readdir!(mount.root)).toEqual(
       expect.arrayContaining([".", "..", "a.py", "b.py"]),
     );
@@ -280,7 +303,9 @@ describe("a filesystem that throws", () => {
   });
 
   it("keeps the thrown message", () => {
-    const result = broken(new Error("host is gone")).get({ path: "/a.py" }) as any;
+    const result = broken(new Error("host is gone")).get({
+      path: "/a.py",
+    }) as any;
     expect(result.error.message).toBe("host is gone");
   });
 
@@ -293,7 +318,9 @@ describe("a filesystem that throws", () => {
 
   it("raises ENOENT to Python for a path a broken filesystem cannot answer", () => {
     const mount = mounted();
-    expect(() => mount.nodeOps.lookup(mount.root, "ghost.py")).toThrow(ErrnoError);
+    expect(() => mount.nodeOps.lookup(mount.root, "ghost.py")).toThrow(
+      ErrnoError,
+    );
   });
 });
 
@@ -321,6 +348,8 @@ describe("seeking", () => {
 
   it("refuses to seek before the start", () => {
     const stream = mount.open("seek.bin");
-    expect(() => mount.streamOps.llseek!(stream, -1, SEEK_SET)).toThrow(ErrnoError);
+    expect(() => mount.streamOps.llseek!(stream, -1, SEEK_SET)).toThrow(
+      ErrnoError,
+    );
   });
 });

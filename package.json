@@ -17,7 +17,9 @@
     "test:unit": "vitest",
     "test": "npm run test:unit -- --run",
     "report": "./sweater-vest-suede/report.sh",
-    "test:browser": "npm run report -- --closet /tests"
+    "test:browser": "npm run report -- --closet /tests",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "devDependencies": {
     "@storybook/test": "^8.6.14",
@@ -31,6 +33,8 @@
     "dockview": "^4.13.1",
     "dockview-core": "^4.13.1",
     "html-to-image": "^1.11.13",
+    "prettier": "3.9.6",
+    "prettier-plugin-svelte": "4.1.1",
     "svelte": "^5.49.2",
     "svelte-check": "^4.3.6",
     "tailwindcss": "^4.2.1",

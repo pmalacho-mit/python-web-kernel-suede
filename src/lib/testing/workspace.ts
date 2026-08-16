@@ -6,7 +6,7 @@ import { inMemoryKernel, run, type Files } from "./kernel";
  * plus an optional `index.ts` saying what to run and what to expect of it.
  */
 export namespace Workspace {
-  export type Expect = typeof import("@storybook/test")["expect"];
+  export type Expect = (typeof import("@storybook/test"))["expect"];
 
   export type Context = {
     /** The files Python sees. Anything it writes shows up here too. */
@@ -92,7 +92,8 @@ const byWorkspace = <T>(sources: Record<string, T>) => {
   return grouped;
 };
 
-const moduleOf = (name: string) => modules[`./workspaces/${name}/index.ts`] ?? {};
+const moduleOf = (name: string) =>
+  modules[`./workspaces/${name}/index.ts`] ?? {};
 
 /** Every workspace on disk, in a stable order. */
 export const discover = (): Workspace.Definition[] => {
@@ -111,7 +112,8 @@ const DEFAULT_ENTRY = "main.py";
 
 /** A workspace either has a `main.py` or says what to run instead. */
 const entriesOf = ({ name, text, module }: Workspace.Definition) => {
-  const entries = module.entries ?? (text.has(DEFAULT_ENTRY) ? [DEFAULT_ENTRY] : []);
+  const entries =
+    module.entries ?? (text.has(DEFAULT_ENTRY) ? [DEFAULT_ENTRY] : []);
   if (entries.length === 0)
     throw new Error(
       `Workspace "${name}" has no ${DEFAULT_ENTRY} and declares no entries`,

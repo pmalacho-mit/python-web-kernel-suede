@@ -41,16 +41,15 @@
 
     const result = await run(
       kernel,
-      [
-        'with open("notes/today.txt") as f:',
-        "    print(f.read())",
-      ].join("\n"),
+      ['with open("notes/today.txt") as f:', "    print(f.read())"].join("\n"),
     );
 
     pocket.detail = result.failure || result.stdout;
     harness.note(pocket.detail);
     harness.expect(result.failure).toBe("");
-    harness.expect(result.stdout.trim()).toBe("written before the kernel started");
+    harness
+      .expect(result.stdout.trim())
+      .toBe("written before the kernel started");
   }}
 >
   {#snippet vest(pocket: Pocket)}
@@ -114,10 +113,9 @@
 
     const result = await run(
       kernel,
-      [
-        'answer = input("how many?")',
-        'print("doubled", int(answer) * 2)',
-      ].join("\n"),
+      ['answer = input("how many?")', 'print("doubled", int(answer) * 2)'].join(
+        "\n",
+      ),
     );
 
     harness.expect(result.failure).toBe("");
@@ -165,7 +163,9 @@
 
     const result = await run(
       kernel,
-      ['with open("notes/yesterday.txt") as f:', "    print(f.read())"].join("\n"),
+      ['with open("notes/yesterday.txt") as f:', "    print(f.read())"].join(
+        "\n",
+      ),
     );
 
     harness.expect(result.failure).toBe("");

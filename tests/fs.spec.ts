@@ -1,11 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
-import { empty, readOnly, readWrite, sanitizePath, writeOnly } from "../release/fs";
+import {
+  empty,
+  readOnly,
+  readWrite,
+  sanitizePath,
+  writeOnly,
+} from "../release/fs";
 import type { Contents } from "../release/contents";
 
 const utf8 = new TextEncoder();
 const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-const options = { root: "/home/pyodide", removeRoot: true, removeLeadingSlash: true };
+const options = {
+  root: "/home/pyodide",
+  removeRoot: true,
+  removeLeadingSlash: true,
+};
 
 const later = <T>(value: T) =>
   new Promise<T>((resolve) => setTimeout(() => resolve(value), 1));
@@ -16,7 +26,9 @@ describe("path sanitizing", () => {
   });
 
   it("keeps paths that are not under the root", () => {
-    expect(sanitizePath("/elsewhere/main.py", options)).toBe("elsewhere/main.py");
+    expect(sanitizePath("/elsewhere/main.py", options)).toBe(
+      "elsewhere/main.py",
+    );
   });
 
   it("turns the root itself into the empty path", () => {
@@ -57,14 +69,18 @@ describe("reading", () => {
     readOnly({ ...options, get, listDirectory: () => undefined });
 
   it("returns text", async () => {
-    expect(await reader(() => "print(1)").get({ path: "/home/pyodide/a.py" })).toEqual({
+    expect(
+      await reader(() => "print(1)").get({ path: "/home/pyodide/a.py" }),
+    ).toEqual({
       ok: true,
       data: "print(1)",
     });
   });
 
   it("returns bytes", async () => {
-    expect(await reader(() => png).get({ path: "/home/pyodide/logo.png" })).toEqual({
+    expect(
+      await reader(() => png).get({ path: "/home/pyodide/logo.png" }),
+    ).toEqual({
       ok: true,
       data: png,
     });
@@ -85,14 +101,18 @@ describe("reading", () => {
   });
 
   it("reports a directory as null contents", async () => {
-    expect(await reader(() => ({ directory: true })).get({ path: "pkg" })).toEqual({
+    expect(
+      await reader(() => ({ directory: true })).get({ path: "pkg" }),
+    ).toEqual({
       ok: true,
       data: null,
     });
   });
 
   it("falls through to the base when nothing was found", async () => {
-    expect(await reader(() => undefined).get({ path: "ghost.py" })).toMatchObject({
+    expect(
+      await reader(() => undefined).get({ path: "ghost.py" }),
+    ).toMatchObject({
       ok: false,
       status: 404,
     });
@@ -127,7 +147,11 @@ describe("reading", () => {
 
 describe("describing a path", () => {
   it("measures contents when no stat callback was given", async () => {
-    const fs = readOnly({ ...options, get: () => "🐍", listDirectory: () => undefined });
+    const fs = readOnly({
+      ...options,
+      get: () => "🐍",
+      listDirectory: () => undefined,
+    });
     expect(await fs.stat({ path: "a.txt" })).toEqual({
       ok: true,
       data: { size: 4, directory: false },
@@ -135,7 +159,11 @@ describe("describing a path", () => {
   });
 
   it("measures bytes rather than characters", async () => {
-    const fs = readOnly({ ...options, get: () => png, listDirectory: () => undefined });
+    const fs = readOnly({
+      ...options,
+      get: () => png,
+      listDirectory: () => undefined,
+    });
     expect(await fs.stat({ path: "logo.png" })).toMatchObject({
       data: { size: 8, directory: false },
     });
@@ -181,8 +209,15 @@ describe("describing a path", () => {
   });
 
   it("reports a missing path as not found", async () => {
-    const fs = readOnly({ ...options, get: () => undefined, listDirectory: () => undefined });
-    expect(await fs.stat({ path: "ghost" })).toMatchObject({ ok: false, status: 404 });
+    const fs = readOnly({
+      ...options,
+      get: () => undefined,
+      listDirectory: () => undefined,
+    });
+    expect(await fs.stat({ path: "ghost" })).toMatchObject({
+      ok: false,
+      status: 404,
+    });
   });
 });
 
@@ -199,7 +234,10 @@ describe("writing", () => {
 
   it("hands text through as text", async () => {
     const { written, fs } = collect();
-    await fs.put({ path: "/home/pyodide/a.py", value: utf8.encode("print(1)") });
+    await fs.put({
+      path: "/home/pyodide/a.py",
+      value: utf8.encode("print(1)"),
+    });
     expect(written).toEqual([["a.py", "print(1)"]]);
   });
 
@@ -236,14 +274,24 @@ describe("writing", () => {
 
   it("sanitizes both ends of a move", async () => {
     const moves: unknown[] = [];
-    const fs = writeOnly({ ...options, put: () => {}, move: (request) => void moves.push(request) });
-    await fs.move({ path: "/home/pyodide/a.py", newPath: "/home/pyodide/b.py" });
+    const fs = writeOnly({
+      ...options,
+      put: () => {},
+      move: (request) => void moves.push(request),
+    });
+    await fs.move({
+      path: "/home/pyodide/a.py",
+      newPath: "/home/pyodide/b.py",
+    });
     expect(moves).toEqual([{ from: "a.py", to: "b.py" }]);
   });
 
   it("keeps the base behaviour when no delete callback was given", async () => {
     const fs = writeOnly({ ...options, put: () => {} });
-    expect(await fs.delete({ path: "a.py" })).toEqual({ ok: true, data: undefined });
+    expect(await fs.delete({ path: "a.py" })).toEqual({
+      ok: true,
+      data: undefined,
+    });
   });
 });
 
@@ -265,7 +313,10 @@ describe("reading and writing together", () => {
 
   it("reads back what was written", async () => {
     const { fs } = store();
-    await fs.put({ path: "/home/pyodide/a.py", value: utf8.encode("print(1)") });
+    await fs.put({
+      path: "/home/pyodide/a.py",
+      value: utf8.encode("print(1)"),
+    });
     expect(await fs.get({ path: "/home/pyodide/a.py" })).toEqual({
       ok: true,
       data: "print(1)",
@@ -282,6 +333,9 @@ describe("reading and writing together", () => {
     const { fs } = store();
     await fs.put({ path: "a.py", value: "x" });
     await fs.delete({ path: "a.py" });
-    expect(await fs.get({ path: "a.py" })).toMatchObject({ ok: false, status: 404 });
+    expect(await fs.get({ path: "a.py" })).toMatchObject({
+      ok: false,
+      status: 404,
+    });
   });
 });
