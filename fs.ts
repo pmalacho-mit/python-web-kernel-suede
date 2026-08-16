@@ -166,9 +166,9 @@ const measuredByReading =
       result.ok ? ok(entryOf(result.data)) : result,
     );
 
-const sanitizer = (options: FileSystem.SanitizeOptions) => (opts: {
-  path: string;
-}) => sanitizePath(opts.path, options);
+const sanitizer =
+  (options: FileSystem.SanitizeOptions) => (opts: { path: string }) =>
+    sanitizePath(opts.path, options);
 
 /**
  * Create a read-only filesystem facade layered on top of an optional base
@@ -186,7 +186,10 @@ export const readOnly = (
   const reader: RootedFileSystem = {
     ...fallback,
     get: (opts) =>
-      awaited.map(get(at(opts)), (value) => answered(value) ?? fallback.get(opts)),
+      awaited.map(
+        get(at(opts)),
+        (value) => answered(value) ?? fallback.get(opts),
+      ),
     listDirectory: (opts) =>
       awaited.map(listDirectory(at(opts)), (names) =>
         Array.isArray(names) ? ok(names) : fallback.listDirectory(opts),
@@ -217,7 +220,8 @@ export const writeOnly = (
   const { put, move, delete: remove, binary = false } = options;
   const fallback = base ?? empty(options.root, options.log);
   const at = sanitizer(options);
-  const done = (value: Awaitable<void>) => awaited.map(value, () => ok(undefined));
+  const done = (value: Awaitable<void>) =>
+    awaited.map(value, () => ok(undefined));
 
   /** Text written by Python stays text unless raw bytes were asked for. */
   const written = (value: Contents | null) =>

@@ -51,7 +51,11 @@ export class HostBridge {
     this.memory = new AsyncMemory({ capacity });
     this.channel = new ChannelHost(this.memory);
     this.objects = new ObjectProxyHost(this.channel);
-    this.calls = new SyncCallHost(targets, this.channel, this.objects.references);
+    this.calls = new SyncCallHost(
+      targets,
+      this.channel,
+      this.objects.references,
+    );
   }
 
   get buffers() {
@@ -101,7 +105,10 @@ export class WorkerBridge {
 
     /** Every message says which request it belongs to. */
     const post = (message: { type: string }) =>
-      postMessage({ ...message, request: this.memory.request } as BridgeMessage);
+      postMessage({
+        ...message,
+        request: this.memory.request,
+      } as BridgeMessage);
 
     this.channel = new ChannelWorker(
       this.memory,
@@ -109,6 +116,10 @@ export class WorkerBridge {
       patience,
     );
     this.objects = new ObjectProxyClient(this.channel, post);
-    this.calls = new SyncCallClient(this.channel, post, this.objects.references);
+    this.calls = new SyncCallClient(
+      this.channel,
+      post,
+      this.objects.references,
+    );
   }
 }

@@ -245,7 +245,10 @@ const methods = (
       const node = createNode!(parent, name, mode, dev as number);
       const path = realPath(node);
       syncResult(
-        custom.put({ path, value: FS.isDir(node.mode) ? null : new Uint8Array() }),
+        custom.put({
+          path,
+          value: FS.isDir(node.mode) ? null : new Uint8Array(),
+        }),
       );
       return node;
     },

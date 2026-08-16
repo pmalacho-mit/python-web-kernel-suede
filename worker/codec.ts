@@ -204,9 +204,7 @@ const tagOfObject = (value: object): Tag => {
 
 const classify = (value: unknown): Tag =>
   tagOfPrimitive(value) ??
-  (typeof value === "function"
-    ? TAG.reference
-    : tagOfObject(value as object));
+  (typeof value === "function" ? TAG.reference : tagOfObject(value as object));
 
 const CONTAINERS = new Set<Tag>([TAG.array, TAG.record, TAG.map, TAG.set]);
 
@@ -305,13 +303,16 @@ const encoders: Record<Tag, (w: Writer, value: any, context: Context) => void> =
     [TAG.arrayBuffer]: (w, value: ArrayBuffer) => w.blob(new Uint8Array(value)),
     [TAG.array]: (w, value: unknown[], c) =>
       writeValues(w, value, value.length, c),
-    [TAG.set]: (w, value: Set<unknown>, c) => writeValues(w, value, value.size, c),
+    [TAG.set]: (w, value: Set<unknown>, c) =>
+      writeValues(w, value, value.size, c),
     /** Own enumerable string keys only: symbol keys and getters are not sent. */
-  [TAG.record]: (w, value: object, c) => writeFields(w, Object.entries(value), c),
+    [TAG.record]: (w, value: object, c) =>
+      writeFields(w, Object.entries(value), c),
     [TAG.map]: (w, value: Map<unknown, unknown>, c) =>
       writeValues(w, flatten(value), value.size * 2, c),
     [TAG.error]: (w, value: Error) => writeError(w, value),
-    [TAG.reference]: (w, value: object, c) => w.text(c.references.encode(value)),
+    [TAG.reference]: (w, value: object, c) =>
+      w.text(c.references.encode(value)),
   };
 
 const decoders: Record<Tag, (reader: Reader, context: Context) => unknown> = {
@@ -378,7 +379,10 @@ const read = (reader: Reader, context: Context): any => {
 };
 
 const rejectShared = (bytes: Uint8Array) => {
-  if (typeof SharedArrayBuffer !== "undefined" && bytes.buffer instanceof SharedArrayBuffer)
+  if (
+    typeof SharedArrayBuffer !== "undefined" &&
+    bytes.buffer instanceof SharedArrayBuffer
+  )
     throw new CodecError("Cannot decode directly from shared memory");
   return bytes;
 };

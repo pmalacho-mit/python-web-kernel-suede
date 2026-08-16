@@ -117,7 +117,10 @@ export class ObjectProxyHost {
 
   handleProxyMessage(message: ProxyMessage, request: number) {
     if (message.type === "proxy_reflect")
-      this.respond(settled.capture(() => this.reflect(message)), request);
+      this.respond(
+        settled.capture(() => this.reflect(message)),
+        request,
+      );
     else if (message.type === "proxy_promise")
       this.settlePromise(message, request);
     else if (message.type === "proxy_release")
@@ -201,7 +204,12 @@ export class ObjectProxyClient {
             thisArg: args[0],
             args: this.encodeArguments(args[1]),
           }
-        : { type: "proxy_reflect", method, target, args: this.encodeArguments(args) };
+        : {
+            type: "proxy_reflect",
+            method,
+            target,
+            args: this.encodeArguments(args),
+          };
 
     return this.request(message);
   }

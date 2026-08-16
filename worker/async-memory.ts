@@ -35,6 +35,7 @@ export class AsyncMemory {
   static LOCK_SIZE_INDEX = 2;
   static SIZE_INDEX = 4;
   static REQUEST_INDEX = 6;
+  static ANSWER_INDEX = 7;
   static UNLOCKED = 0;
   static LOCKED = 1;
 
@@ -157,8 +158,25 @@ export class AsyncMemory {
     Atomics.add(this.lockAndSize, AsyncMemory.REQUEST_INDEX, 1);
   }
 
+  /**
+   * Which request the payload in shared memory answers.
+   *
+   * Checking the token before writing is not enough on its own: the worker can
+   * give up and ask something else while the host is still copying, so what it
+   * finds on waking has to say what it belongs to.
+   */
+  writeAnswer(request: number) {
+    Atomics.store(this.lockAndSize, AsyncMemory.ANSWER_INDEX, request);
+  }
+
+  get answer() {
+    return Atomics.load(this.lockAndSize, AsyncMemory.ANSWER_INDEX);
+  }
+
   isAwaiting(request: number) {
-    return Atomics.load(this.lockAndSize, AsyncMemory.REQUEST_INDEX) === request;
+    return (
+      Atomics.load(this.lockAndSize, AsyncMemory.REQUEST_INDEX) === request
+    );
   }
 
   get interrupted() {

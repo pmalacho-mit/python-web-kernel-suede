@@ -3,8 +3,7 @@
  * as data so that a thrown exception can never leave a blocked worker waiting.
  */
 export type Settled<T = unknown> =
-  | { ok: true; value: T }
-  | { ok: false; error: Error };
+  { ok: true; value: T } | { ok: false; error: Error };
 
 const asError = (thrown: unknown) =>
   thrown instanceof Error ? thrown : new Error(String(thrown));
@@ -18,7 +17,9 @@ export const settled = {
     }
   },
 
-  captureAsync: async <T>(produce: () => T | Promise<T>): Promise<Settled<T>> => {
+  captureAsync: async <T>(
+    produce: () => T | Promise<T>,
+  ): Promise<Settled<T>> => {
     try {
       return { ok: true, value: await produce() };
     } catch (thrown) {
