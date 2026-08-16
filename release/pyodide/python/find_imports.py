@@ -1,7 +1,23 @@
+"""Finds the external packages a run will need before it runs.
+
+`pyodide.code.find_imports` plus `loadPackagesFromImports` only sees the imports
+written in the source it is handed. A run whose entry point imports a local
+module, which imports another local module, which imports pandas, would reach
+that import at runtime with nothing installed. This walks the local modules
+first and reports what they need, along with the directories to put on sys.path.
+
+Being a walker over local files, it has to be kept working against the Pyodide
+release in use.
+"""
+
 import pyodide.code
 import os
 import sys
-import micropip
+
+try:
+    import micropip
+except ImportError:  # no package index is reachable; only the stdlib is here
+    micropip = None
 
 
 def find_external_imports_of_local_modules(
@@ -14,7 +30,7 @@ def find_external_imports_of_local_modules(
     discovered_dirs: set[str] = set()
     visited: set[str] = set()
     stdlib = set(sys.stdlib_module_names)
-    installed = {pkg.name for pkg in micropip.list().values()}
+    installed = {pkg.name for pkg in micropip.list().values()} if micropip else set()
 
     root = os.path.realpath(root)
 
@@ -111,7 +127,7 @@ def find_external_imports_of_local_modules(
     discovered_dirs: set[str] = set()  # NEW: directories containing local modules
     visited: set[str] = set()
     stdlib = set(sys.stdlib_module_names)
-    installed = {pkg.name for pkg in micropip.list().values()}
+    installed = {pkg.name for pkg in micropip.list().values()} if micropip else set()
 
     base_dir = os.path.dirname(path)
     discovered_dirs.add(base_dir)

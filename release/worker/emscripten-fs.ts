@@ -9,19 +9,39 @@
 
 import type { PyodideAPI } from "pyodide";
 import type { SyncResult } from "../utils";
+import { contents, resizeBytes, type Contents } from "../contents";
 
+/** What is known about a path without reading its contents. */
+export type Entry = {
+  size: number;
+  directory: boolean;
+};
+
+/**
+ * What Python's filesystem calls turn into.
+ *
+ * An open file is held whole in the worker and written back with a single
+ * `put` when it is closed, so `get` and `put` are called once per open file
+ * rather than once per read or write. Python's `flush()` does not reach the
+ * host, and a run that is terminated mid-write never gets to `put` at all.
+ */
 export interface SyncFileSystem {
   /**
    * Get a file or directory at a given path.
    * @returns The contents of the file. `null` corresponds to a directory
    */
-  get(opts: { path: string }): SyncResult<string | null>;
+  get(opts: { path: string }): SyncResult<Contents | null>;
+
+  /**
+   * Describe a file or directory without transferring its contents.
+   */
+  stat(opts: { path: string }): SyncResult<Entry>;
 
   /**
    * Creates or replaces a file or directory at a given path.
    * @param opts.value The contents of the file. `null` corresponds to a directory
    */
-  put(opts: { path: string; value: string | null }): SyncResult<undefined>;
+  put(opts: { path: string; value: Contents | null }): SyncResult<undefined>;
 
   /**
    * Deletes a file or directory at a given path
@@ -38,6 +58,39 @@ export interface SyncFileSystem {
    */
   listDirectory(opts: { path: string }): SyncResult<string[]>;
 }
+
+export const fileSystemMethods = [
+  "get",
+  "stat",
+  "put",
+  "delete",
+  "move",
+  "listDirectory",
+] as const satisfies readonly (keyof SyncFileSystem)[];
+
+const failed = (thrown: unknown): SyncResult<never> => ({
+  ok: false,
+  status: 500,
+  error: thrown instanceof Error ? thrown : new Error(String(thrown)),
+});
+
+/**
+ * A filesystem whose calls may throw becomes one that always answers, so a
+ * broken host reaches Python as a failed operation rather than as a crash.
+ */
+export const answering = (fs: SyncFileSystem): SyncFileSystem =>
+  Object.fromEntries(
+    fileSystemMethods.map((method) => [
+      method,
+      (opts: any) => {
+        try {
+          return (fs[method] as any)(opts);
+        } catch (thrown) {
+          return failed(thrown);
+        }
+      },
+    ]),
+  ) as unknown as SyncFileSystem;
 
 const convertSyncResult = <T, E>(
   FS: PyodideAPI["FS"],
@@ -92,31 +145,6 @@ const SEEK_CUR = 1;
 const SEEK_END = 2;
 const O_TRUNC = 512;
 
-const bytesToBinaryString = (bytes: Uint8Array) => {
-  if (bytes.length === 0) return "";
-
-  const chunkSize = 0x8000;
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    const chunk = bytes.subarray(i, i + chunkSize);
-    binary += String.fromCharCode(...chunk);
-  }
-  return binary;
-};
-
-const binaryStringToBytes = (value: string) => {
-  const bytes = new Uint8Array(value.length);
-  for (let i = 0; i < value.length; i++) {
-    bytes[i] = value.charCodeAt(i) & 0xff;
-  }
-  return bytes;
-};
-
-const resizeBinaryString = (value: string, nextSize: number) => {
-  if (nextSize <= value.length) return value.slice(0, nextSize);
-  return value + "\x00".repeat(nextSize - value.length);
-};
-
 const methods = (
   {
     FS,
@@ -138,24 +166,45 @@ const methods = (
     if (log) console.log(`[emscripten-fs] ${name}`, args);
   };
 
+  const readBytes = (path: string) => {
+    const value = syncResult(custom.get({ path }));
+    return value === null ? new Uint8Array() : contents.toBytes(value);
+  };
+
+  const writeBytes = (path: string, bytes: Uint8Array) =>
+    syncResult(custom.put({ path, value: bytes }));
+
   type CustomNode = FS.FSNode & {
     timestamp?: number;
+    /** Set while a stream holds contents the host has not been told about. */
+    pendingSize?: number;
   };
 
   const isCustomNode = (node: FS.FSNode): node is CustomNode =>
     (node as CustomNode).timestamp !== undefined;
 
+  const modeOf = (entry: Entry) => (entry.directory ? DIR_MODE : FILE_MODE);
+
+  /**
+   * An open file is only written back when it is closed, so what a stream holds
+   * is more current than what the host would report.
+   */
+  const sizeOf = (node: FS.FSNode) =>
+    (node as CustomNode).pendingSize ??
+    syncResult(custom.stat({ path: realPath(node) })).size;
+
+  const truncate = (node: FS.FSNode, size: number) => {
+    if (!FS.isFile(node.mode)) throw new FS.ErrnoError(ERRNO_CODES["EINVAL"]);
+    const path = realPath(node);
+    writeBytes(path, resizeBytes(readBytes(path), size));
+    (node as CustomNode).pendingSize = undefined;
+  };
+
   const nodeOps: FS.NodeOps = {
     getattr: (node) => {
       logCall("nodeOps.getattr", { node: node.name, id: node.id });
       const { id: ino, mode, rdev } = node;
-      const path = realPath(node);
-      const size = FS.isFile(mode)
-        ? (() => {
-            const result = syncResult(custom.get({ path }));
-            return result === null ? 0 : result.length;
-          })()
-        : 0;
+      const size = FS.isFile(mode) ? sizeOf(node) : 0;
       const time = new Date(isCustomNode(node) ? node.timestamp! : Date.now());
       return {
         dev,
@@ -178,41 +227,29 @@ const methods = (
       logCall("nodeOps.setattr", { node: node.name, attr });
       if (!attr) return;
       if (attr.mode !== undefined) node.mode = attr.mode;
-      if (attr.size !== undefined) {
-        if (!FS.isFile(node.mode))
-          throw new FS.ErrnoError(ERRNO_CODES["EINVAL"]);
-
-        const path = realPath(node);
-        const result = syncResult(custom.get({ path }));
-        const data = result === null ? "" : result;
-        syncResult(
-          custom.put({ path, value: resizeBinaryString(data, attr.size) }),
-        );
-      }
+      if (attr.size !== undefined) truncate(node, attr.size);
       if (attr.timestamp !== undefined)
-        (node as any).timestamp = attr.timestamp;
+        (node as CustomNode).timestamp = attr.timestamp;
     },
 
     lookup: (parent, name) => {
       logCall("nodeOps.lookup", { parent: parent.name, name });
       const path = realPath(parent, name);
-      const result = custom.get({ path });
+      const result = custom.stat({ path });
       if (!result.ok) throw new FS.ErrnoError(ERRNO_CODES["ENOENT"]);
-      return createNode!(
-        parent,
-        name,
-        result.data === null ? DIR_MODE : FILE_MODE,
-        rdev,
-      );
+      return createNode!(parent, name, modeOf(result.data), rdev);
     },
 
     mknod: (parent, name, mode, dev) => {
       logCall("nodeOps.mknod", { parent: parent.name, name, mode, dev });
       const node = createNode!(parent, name, mode, dev as number);
       const path = realPath(node);
-      FS.isDir(node.mode)
-        ? syncResult(custom.put({ path, value: null }))
-        : syncResult(custom.put({ path, value: "" }));
+      syncResult(
+        custom.put({
+          path,
+          value: FS.isDir(node.mode) ? null : new Uint8Array(),
+        }),
+      );
       return node;
     },
 
@@ -260,117 +297,91 @@ const methods = (
     },
   };
 
-  type CustomStream = FS.FSStream & { fileData?: Uint8Array };
+  /**
+   * Open files hold their whole contents as bytes: reads and writes never touch
+   * the host, only `open` and `close` do.
+   */
+  type CustomStream = FS.FSStream & {
+    fileData?: Uint8Array;
+    dirty?: boolean;
+  };
 
-  const isCustomStream = (stream: FS.FSStream): stream is CustomStream =>
-    (stream as CustomStream).fileData !== undefined;
+  const bytesOf = (stream: FS.FSStream) => {
+    const { fileData } = stream as CustomStream;
+    if (fileData === undefined) throw new FS.ErrnoError(ERRNO_CODES["EPERM"]);
+    return fileData;
+  };
+
+  const isTruncating = (stream: FS.FSStream) =>
+    (stream.flags & O_TRUNC) === O_TRUNC;
+
+  const grow = (stream: CustomStream, size: number) => {
+    if (size > bytesOf(stream).length)
+      stream.fileData = resizeBytes(stream.fileData!, size);
+    return stream.fileData!;
+  };
 
   const streamOps: FS.StreamOps = {
     open: (stream) => {
       const path = realPath(stream.object);
-      logCall("streamOps.open", { path, stream });
-
+      logCall("streamOps.open", { path, flags: stream.flags });
       if (!FS.isFile(stream.object.mode)) return;
-      const result = syncResult(custom.get({ path }));
-      if (result === null) return;
-      const shouldTruncate = (stream.flags & O_TRUNC) === O_TRUNC;
-      (stream as CustomStream).fileData = shouldTruncate
-        ? new Uint8Array()
-        : binaryStringToBytes(result);
+      const truncating = isTruncating(stream);
+      Object.assign(stream as CustomStream, {
+        fileData: truncating ? new Uint8Array() : readBytes(path),
+        dirty: truncating,
+      });
+      if (truncating) (stream.object as CustomNode).pendingSize = 0;
     },
+
     close: (stream) => {
       const path = realPath(stream.object);
       logCall("streamOps.close", { path });
-      if (!FS.isFile(stream.object.mode) || !isCustomStream(stream)) return;
-      const value = bytesToBinaryString(stream.fileData!);
-      stream.fileData = undefined;
-      syncResult(custom.put({ path, value }));
-    },
-    read: (stream, buffer, offset, length, position) => {
-      logCall("streamOps.read", {
-        path: realPath(stream.object),
-        offset,
-        length,
-        position,
+      const { fileData, dirty } = stream as CustomStream;
+      Object.assign(stream as CustomStream, {
+        fileData: undefined,
+        dirty: false,
       });
+      (stream.object as CustomNode).pendingSize = undefined;
+      if (dirty && fileData !== undefined) writeBytes(path, fileData);
+    },
+
+    read: (stream, buffer, offset, length, position) => {
+      logCall("streamOps.read", { offset, length, position });
       if (length <= 0) return 0;
-      const isStream = isCustomStream(stream);
-      const fileLength = isStream ? stream.fileData!.length : 0;
-      const size = Math.min(fileLength - position, length);
-      if (isStream)
-        try {
-          buffer.set(
-            stream.fileData!.subarray(position, position + size),
-            offset,
-          );
-        } catch (e) {
-          console.error("Error during read:", e);
-          throw new FS.ErrnoError(ERRNO_CODES["EPERM"]);
-        }
-      else {
-        console.error("Stream is not a custom stream during read");
-        throw new FS.ErrnoError(ERRNO_CODES["EPERM"]);
-      }
+      const fileData = bytesOf(stream);
+      const size = Math.min(fileData.length - position, length);
+      if (size <= 0) return 0;
+      buffer.set(fileData.subarray(position, position + size), offset);
       return size;
     },
+
     write: (stream, buffer, offset, length, position) => {
-      logCall("streamOps.write", {
-        path: realPath(stream.object),
-        offset,
-        length,
-        position,
-      });
+      logCall("streamOps.write", { offset, length, position });
       if (length <= 0) return 0;
-      (stream.object as CustomNode).timestamp = Date.now();
-
-      const isStream = isCustomStream(stream);
-      const fileLength = isStream ? stream.fileData!.length : 0;
-
-      try {
-        if (position + length > fileLength) {
-          const oldData = (stream as CustomStream).fileData ?? new Uint8Array();
-          (stream as CustomStream).fileData = new Uint8Array(position + length);
-          (stream as CustomStream).fileData!.set(oldData);
-        }
-
-        (stream as CustomStream).fileData!.set(
-          buffer.subarray(offset, offset + length),
-          position,
-        );
-
-        return length;
-      } catch (e) {
-        console.error("Error during write:", e);
-        throw new FS.ErrnoError(ERRNO_CODES["EPERM"]);
-      }
-    },
-    llseek: (stream, offset, whence) => {
-      logCall("streamOps.llseek", {
-        path: realPath(stream.object),
-        offset,
-        whence,
+      const fileData = grow(stream as CustomStream, position + length);
+      fileData.set(buffer.subarray(offset, offset + length), position);
+      Object.assign(stream.object as CustomNode, {
+        timestamp: Date.now(),
+        pendingSize: fileData.length,
       });
-      let position = offset;
-      if (whence === SEEK_CUR) {
-        position += stream.position;
-      } else if (whence === SEEK_END) {
-        if (FS.isFile(stream.object.mode)) {
-          try {
-            if (isCustomStream(stream)) position += stream.fileData!.length;
-          } catch (e) {
-            console.error("Error during llseek:", e);
-            throw new FS.ErrnoError(ERRNO_CODES["EPERM"]);
-          }
-        }
-      }
+      (stream as CustomStream).dirty = true;
+      return length;
+    },
 
-      if (position < 0) {
-        console.error("Error during llseek: position < 0");
-        throw new FS.ErrnoError(ERRNO_CODES["EINVAL"]);
-      }
-
+    llseek: (stream, offset, whence) => {
+      logCall("streamOps.llseek", { offset, whence });
+      const position = offset + seekOrigin(stream, whence);
+      if (position < 0) throw new FS.ErrnoError(ERRNO_CODES["EINVAL"]);
       return position;
     },
+  };
+
+  const seekOrigin = (stream: FS.FSStream, whence: number) => {
+    if (whence === SEEK_CUR) return stream.position;
+    if (whence === SEEK_END && FS.isFile(stream.object.mode))
+      return bytesOf(stream).length;
+    return 0;
   };
 
   type CreatedNode = FS.FSNode & {

@@ -109,12 +109,26 @@ const autoInstallableExternalPackages = new Map<string, string>([
   ["sklearn", "scikit-learn"],
 ]);
 
+/**
+ * Installing packages needs an index to fetch them from. A kernel served
+ * without one still runs code that only needs the standard library.
+ */
+const tryLoadPackage = async (pyodide: PyodideAPI, name: string) => {
+  try {
+    await pyodide.loadPackage(name, { messageCallback: loadMsgFilter() });
+    return true;
+  } catch (error) {
+    console.warn(`Could not load the "${name}" package`, error);
+    return false;
+  }
+};
+
 export const tryLoadImportsOfLocallyImportedModules = async (
   pyodide: PyodideAPI,
   source: string,
   filename: string,
 ) => {
-  await pyodide.loadPackage("micropip", { messageCallback: loadMsgFilter() });
+  await tryLoadPackage(pyodide, "micropip");
   const modules = await pyodide.runPythonAsync(
     code.recursivelyFindExternalImports(source, filename),
   );
@@ -128,10 +142,7 @@ export const tryLoadImportsOfLocallyImportedModules = async (
       await pyodide.runPythonAsync(
         code.micropipInstall(autoInstallableExternalPackages.get(mod)!),
       );
-    else if (supported.has(mod))
-      await pyodide.loadPackage(mod, {
-        messageCallback: loadMsgFilter(),
-      });
+    else if (supported.has(mod)) await tryLoadPackage(pyodide, mod);
   tryResolveProblematicDependencies(pyodide, toInstall);
   return { toInstall, discoveredDirs };
 };

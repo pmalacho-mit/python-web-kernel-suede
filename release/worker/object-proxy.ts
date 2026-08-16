@@ -1,65 +1,51 @@
 import { nanoid } from "nanoid";
-import { AsyncMemory } from "./async-memory";
+import type { ChannelHost, ChannelWorker } from "./channel";
+import { codec, type References } from "./codec";
+import { settled, type Settled } from "./settled";
 import type { Typed } from "../utils";
 
-const SERIALIZATION = {
-  UNDEFINED: 0,
-  NULL: 1,
-  FALSE: 2,
-  TRUE: 3,
-  NUMBER: 4,
-  DATE: 5,
-  KNOWN_SYMBOL: 6,
-  STRING: 10,
-  BIGINT: 11,
-  OBJECT: 255,
-} as const;
+export const ObjectId = Symbol.for("id");
 
-// https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol
-const KNOWN_SYMBOLS = [
-  Symbol.asyncIterator,
-  Symbol.hasInstance,
-  Symbol.isConcatSpreadable,
-  Symbol.iterator,
-  Symbol.match,
-  Symbol.matchAll,
-  Symbol.replace,
-  Symbol.search,
-  Symbol.species,
-  Symbol.split,
-  Symbol.toPrimitive,
-  Symbol.toStringTag,
-  Symbol.unscopables,
-];
+/**
+ * Whether an id stands for a function is part of the id, because a proxy has to
+ * decide what to wrap before it can ask the other thread anything about it.
+ */
+const FUNCTION_KIND = "f";
 
-const textEncoder = new TextEncoder();
-const textDecoder = new TextDecoder("utf-8");
+const kindOf = (value: unknown) =>
+  typeof value === "function" ? FUNCTION_KIND : "o";
 
-const encodeFloat = useFloatEncoder();
-const decodeFloat = useFloatDecoder();
+/** The id an object carries when it lives on the other thread. */
+const idOf = (value: any): string | undefined => {
+  if (value === null || value === undefined) return undefined;
+  const id = value[ObjectId];
+  return typeof id === "string" ? id : undefined;
+};
 
-function useFloatEncoder() {
-  // https://stackoverflow.com/a/14379836/3492994
-  const temp = new ArrayBuffer(8);
-  const tempFloat64 = new Float64Array(temp);
-  const tempUint8 = new Uint8Array(temp);
+const isThenable = (value: any): value is PromiseLike<unknown> =>
+  typeof value?.then === "function";
 
-  return function (value: number): Uint8Array {
-    tempFloat64[0] = value;
-    return tempUint8;
-  };
-}
+const labelOfInstance = (value: any): string | undefined => {
+  if (value === globalThis) return "globalThis";
+  if (Array.isArray(value)) return "Array";
+  const constructor = value?.constructor?.name;
+  return constructor && constructor !== "Object" ? constructor : undefined;
+};
 
-function useFloatDecoder() {
-  const temp = new ArrayBuffer(8);
-  const tempFloat64 = new Float64Array(temp);
-  const tempUint8 = new Uint8Array(temp);
+const labelOfShape = (value: any) => {
+  const keys = Object.keys(value);
+  return keys.length > 0 ? `{${keys.slice(0, 3).join(",")}}` : "obj";
+};
 
-  return function (value: Uint8Array): number {
-    tempUint8.set(value);
-    return tempFloat64[0];
-  };
-}
+/** A human readable hint baked into ids so proxy traffic can be debugged. */
+const label = (value: any): string => {
+  try {
+    if (typeof value === "function") return value.name || "anon";
+    return labelOfInstance(value) ?? labelOfShape(value);
+  } catch {
+    return "unknown";
+  }
+};
 
 /**
  * Lets one other thread access the objects on this thread.
@@ -68,351 +54,136 @@ function useFloatDecoder() {
 export class ObjectProxyHost {
   readonly rootReferences = new Map<string, any>();
   readonly temporaryReferences = new Map<string, any>();
-  readonly memory: AsyncMemory;
 
-  private writeMemoryContinuation?: () => void;
+  /**
+   * The id an object was already given. Without it every crossing would mint a
+   * new one, so the same object would arrive as a different object each time
+   * and the registry would grow for as long as the kernel lived.
+   */
+  private readonly identifiers = new WeakMap<object, string>();
 
-  constructor(memory: AsyncMemory) {
-    this.memory = memory;
-  }
+  readonly references: References = {
+    encode: (value) => this.registerTempObject(value),
+    decode: (id) => this.getObject(id),
+  };
 
-  /** Creates a valid, random id for a given object */
+  constructor(private readonly channel: ChannelHost) {}
+
   private getId(value: any) {
-    const suffix = typeof value === "function" ? "f" : "o";
-    const label = this.getLabel(value);
-    return `${nanoid()}-${label}-${suffix}`;
-  }
-
-  private getLabel(value: any): string {
-    try {
-      if (typeof value === "function") {
-        return value.name || "anon";
-      }
-      if (value === globalThis) return "globalThis";
-      if (value instanceof Headers) return "Headers";
-      if (value instanceof Request) return "Request";
-      if (value instanceof Response) return "Response";
-      if (value instanceof AbortController) return "AbortController";
-      if (value instanceof AbortSignal) return "AbortSignal";
-      if (value instanceof URL) return "URL";
-      if (value instanceof Promise) return "Promise";
-      if (value instanceof Error) return "Error";
-      if (value instanceof Map) return "Map";
-      if (value instanceof Set) return "Set";
-      if (value instanceof ArrayBuffer) return "ArrayBuffer";
-      if (Array.isArray(value)) return "Array";
-
-      // Try constructor name
-      const ctorName = value?.constructor?.name;
-      if (ctorName && ctorName !== "Object") return ctorName;
-
-      // For plain objects, show first few keys
-      const keys = Object.keys(value);
-      if (keys.length > 0) return `{${keys.slice(0, 3).join(",")}}`;
-
-      return "obj";
-    } catch {
-      return "unknown";
-    }
+    return `${kindOf(value)}:${nanoid()}-${label(value)}`;
   }
 
   registerRootObject(value: any) {
     const id = this.getId(value);
     this.rootReferences.set(id, value);
+    this.identifiers.set(value, id);
     return id;
   }
 
   registerTempObject(value: any) {
+    const known = this.identifiers.get(value);
+    if (known !== undefined) return known;
+
     const id = this.getId(value);
     this.temporaryReferences.set(id, value);
+    this.identifiers.set(value, id);
     return id;
   }
 
-  clearTemporary() {
-    this.temporaryReferences.clear();
+  /** Called when the worker has collected the proxy that stood for this id. */
+  releaseTempObject(id: string) {
+    const value = this.temporaryReferences.get(id);
+    if (value === undefined) return;
+    this.temporaryReferences.delete(id);
+    this.identifiers.delete(value);
   }
 
   getObject(id: string) {
     return this.rootReferences.get(id) ?? this.temporaryReferences.get(id);
   }
 
-  // A serializePostMessage isn't needed here, because all we're ever going to pass to the worker are ids
+  respond(result: Settled, request: number) {
+    this.channel.send(this.encode(result), request);
+  }
 
-  serializeMemory(value: any, memory: AsyncMemory) {
-    // Format:
-    // [1 byte][n bytes ]
-    // [type  ][data    ]
-
-    memory.writeSize(8); // Anything that fits into 8 bytes is fine
-
-    // Simple primitives. Guaranteed to fit into the shared memory.
-    if (value === undefined) {
-      memory.memory[0] = SERIALIZATION.UNDEFINED;
-      memory.unlockSize();
-    } else if (value === null) {
-      memory.memory[0] = SERIALIZATION.NULL;
-      memory.unlockSize();
-    } else if (value === false) {
-      memory.memory[0] = SERIALIZATION.FALSE;
-      memory.unlockSize();
-    } else if (value === true) {
-      memory.memory[0] = SERIALIZATION.TRUE;
-      memory.unlockSize();
-    } else if (typeof value === "number") {
-      memory.memory[0] = SERIALIZATION.NUMBER;
-      memory.memory.set(encodeFloat(value), 1);
-      memory.unlockSize();
-    } else if (value instanceof Date) {
-      memory.memory[0] = SERIALIZATION.DATE;
-      const time = value.getTime();
-      memory.memory.set(encodeFloat(time), 1);
-      memory.unlockSize();
-    } else if (typeof value === "symbol" && KNOWN_SYMBOLS.includes(value)) {
-      memory.memory[0] = SERIALIZATION.KNOWN_SYMBOL;
-      memory.memory[1] = KNOWN_SYMBOLS.indexOf(value);
-      memory.unlockSize();
-    }
-    // Variable length primitives. Not guaranteed to fit into the shared memory, but we know their size.
-    else if (typeof value === "string") {
-      memory.memory[0] = SERIALIZATION.STRING;
-      const bytes = textEncoder.encode(value);
-      const memorySize = memory.memory.byteLength;
-
-      // Tell the worker the payload size (NOT counting the type byte)
-      memory.writeSize(bytes.byteLength);
-
-      let offset = 0;
-
-      // First chunk: byte 0 is type, payload starts at byte 1
-      const firstTake = Math.min(bytes.byteLength, memorySize - 1);
-      memory.memory.set(bytes.subarray(0, firstTake), 1);
-      offset += firstTake;
-
-      this.writeMemoryContinuation = () => {
-        if (offset >= bytes.byteLength) {
-          this.writeMemoryContinuation = undefined;
-          memory.unlockSize();
-          return;
-        }
-
-        const take = Math.min(bytes.byteLength - offset, memorySize);
-        // Subsequent chunks fill from 0..take
-        memory.memory.set(bytes.subarray(offset, offset + take), 0);
-
-        // Optional but nice: clear the tail so stale bytes can’t leak into debugging
-        // memory.memory.fill(0, take);
-
-        offset += take;
-        memory.unlockSize();
-      };
-
-      // Unblock worker for the first chunk
-      memory.unlockSize();
-    } else if (typeof value === "bigint") {
-      memory.memory[0] = SERIALIZATION.BIGINT;
-      const digits = value.toString();
-      // TODO: Implement this (just like the text ^)
-      console.warn("Bigint support is not implemented");
-      memory.unlockSize();
-    }
-    // Object. Serialized as ID, guaranteed to fit into shared memory
-    else {
-      memory.memory[0] = SERIALIZATION.OBJECT;
-      const id = this.registerTempObject(value);
-      const data = textEncoder.encode(id);
-      memory.memory.set(data, 1);
-      memory.writeSize(data.byteLength);
-      memory.unlockSize();
+  /** A result that cannot be encoded still has to reach the blocked worker. */
+  private encode(result: Settled) {
+    try {
+      return codec.encode(result, this.references);
+    } catch (thrown) {
+      return codec.encode(settled.failure(thrown));
     }
   }
 
-  /**
-   * Deserializes an object that was sent through postMessage
-   */
-  deserializePostMessage(value: any): any {
-    if (typeof value === "object" && value !== null) {
-      // Special cases
-      if (value.id) return this.getObject(value.id);
-      if (value.value) return value.value;
-      if (value.symbol) return KNOWN_SYMBOLS[value.symbol];
-    }
-    // It's a primitive
-    return value;
-  }
-
-  handleProxyMessage(message: ProxyMessage, memory: AsyncMemory) {
-    if (message.type === "proxy_reflect") {
-      try {
-        if (message.method === "apply") {
-          const method = Reflect[message.method];
-          const args = (message.args ?? []).map((v) =>
-            this.deserializePostMessage(v),
-          );
-          const result = (method as any)(
-            this.getObject(message.target),
-            this.getObject(message.thisArg),
-            args,
-          );
-          // Write result to shared memory
-          this.serializeMemory(result, memory);
-        } else {
-          const method = Reflect[message.method];
-          const args = (message.args ?? []).map((v) =>
-            this.deserializePostMessage(v),
-          );
-          const result = (method as any)(
-            this.getObject(message.target),
-            ...args,
-          );
-          // Write result to shared memory
-          this.serializeMemory(result, memory);
-        }
-      } catch (e) {
-        console.error(message);
-        throw e;
-      }
-    } else if (message.type === "proxy_shared_memory") {
-      // Write remaining data to shared memory
-      if (this.writeMemoryContinuation === undefined) {
-        console.warn("No more data to write to shared memory");
-      } else {
-        this.writeMemoryContinuation();
-      }
-    } else if (message.type === "proxy_print_object") {
-      console.log(
-        "Object with id",
-        message.target,
-        "is",
-        this.getObject(message.target),
+  handleProxyMessage(message: ProxyMessage, request: number) {
+    if (message.type === "proxy_reflect")
+      this.respond(
+        settled.capture(() => this.reflect(message)),
+        request,
       );
-    } else if (message.type === "proxy_promise") {
-      const promiseObject: Promise<any> = this.getObject(message.target);
-      if (message.method === "then") {
-        if ("then" in promiseObject) {
-          promiseObject[message.method](
-            (value) => {
-              const result = { value: value };
-              this.serializeMemory(result, memory);
-            },
-            (err) => {
-              const result = { error: err };
-              this.serializeMemory(result, memory);
-            },
-          );
-        } else this.serializeMemory({ value: promiseObject }, memory);
-      } else {
-        console.error("Unknown proxy promise method", message);
-      }
-    } else {
-      console.warn("Unknown proxy message", message);
-    }
+    else if (message.type === "proxy_promise")
+      this.settlePromise(message, request);
+    else if (message.type === "proxy_release")
+      this.releaseTempObject(message.target);
+    else console.warn("Unknown proxy message", message);
+  }
+
+  private reflect(message: ProxyMessages["proxy_reflect"] & { type: string }) {
+    const target = this.getObject(message.target);
+    const args = codec.decode(message.args, this.references) as any[];
+    if (message.method === "apply")
+      return Reflect.apply(target, this.getObject(message.thisArg!), args);
+    return (Reflect[message.method] as any)(target, ...args);
+  }
+
+  private settlePromise(
+    { target }: ProxyMessages["proxy_promise"],
+    request: number,
+  ) {
+    const value = this.getObject(target);
+    if (!isThenable(value)) return this.respond({ ok: true, value }, request);
+    value.then(
+      (value) => this.respond({ ok: true, value }, request),
+      (error) => this.respond(settled.failure(error), request),
+    );
   }
 }
 
-export const ObjectId = Symbol.for("id");
 /**
  * Allows this thread to access objects from another thread.
  * Must run on a worker thread.
  */
 export class ObjectProxyClient {
-  readonly memory: AsyncMemory;
-  readonly postMessage: (message: ProxyMessage) => void;
+  readonly references: References = {
+    identify: (value) => idOf(value),
+    encode: (value) => this.referenceTo(value),
+    decode: (id) => this.getObjectProxy(id),
+  };
+
+  /** One proxy per id, so `===` means the same thing on both threads. */
+  private readonly proxies = new Map<string, WeakRef<any>>();
+
+  /** Tells the host an id is finished with once nothing here refers to it. */
+  private readonly collected = new FinalizationRegistry<string>((id) => {
+    this.proxies.delete(id);
+    this.postMessage({ type: "proxy_release", target: id });
+  });
+
   constructor(
-    memory: AsyncMemory,
-    postMessage: (message: ProxyMessage) => void,
-  ) {
-    this.memory = memory;
-    this.postMessage = postMessage;
+    private readonly channel: ChannelWorker,
+    private readonly postMessage: (message: ProxyMessage) => void,
+  ) {}
+
+  private referenceTo(value: object | Function) {
+    const id = idOf(value);
+    if (id === undefined)
+      throw new Error("Cannot send a worker-owned object to the host");
+    return id;
   }
 
-  /**
-   * Serializes an object so that it can be sent using postMessage
-   */
-  serializePostMessage(value: any): any {
-    if (isSimplePrimitive(value)) {
-      return value;
-    } else if (isSymbolPrimitive(value)) {
-      return { symbol: KNOWN_SYMBOLS.indexOf(value) };
-    } else if (isVariableLengthPrimitive(value)) {
-      return value;
-    } else if (value[ObjectId] !== undefined) {
-      return { id: value[ObjectId] };
-    } else if (Array.isArray(value)) {
-      return { value: value.map((v) => this.serializePostMessage(v)) };
-    } else {
-      // Maybe serialize simple functions https://stackoverflow.com/questions/1833588/javascript-clone-a-function
-      return { value: value }; // Might fail to get serialized
-    }
-  }
-
-  /**
-   * Deserializes an object from a shared array buffer. Can return a proxy.
-   */
-  deserializeMemory(memory: AsyncMemory) {
-    const numberOfBytes = memory.readSize();
-    // +1 to account for the type byte at index 0
-    const totalBytes = numberOfBytes + 1;
-
-    let resultBytes: Uint8Array;
-    if (totalBytes <= memory.sharedMemory.byteLength) {
-      resultBytes = memory.memory;
-    } else {
-      const memorySize = memory.sharedMemory.byteLength;
-      resultBytes = new Uint8Array(totalBytes);
-
-      resultBytes[0] = memory.memory[0];
-
-      let copiedPayload = Math.min(numberOfBytes, memorySize - 1);
-      resultBytes.set(memory.memory.subarray(1, 1 + copiedPayload), 1);
-
-      while (copiedPayload < numberOfBytes) {
-        memory.lockSize();
-        this.postMessage({ type: "proxy_shared_memory" });
-        memory.waitForSize();
-
-        const remaining = numberOfBytes - copiedPayload;
-        const take = Math.min(remaining, memorySize);
-        resultBytes.set(memory.memory.subarray(0, take), 1 + copiedPayload);
-        copiedPayload += take;
-      }
-    }
-
-    // Simple primitives. Guaranteed to fit into the shared memory.
-    if (resultBytes[0] === SERIALIZATION.UNDEFINED) {
-      return undefined;
-    } else if (resultBytes[0] === SERIALIZATION.NULL) {
-      return null;
-    } else if (resultBytes[0] === SERIALIZATION.FALSE) {
-      return false;
-    } else if (resultBytes[0] === SERIALIZATION.TRUE) {
-      return true;
-    } else if (resultBytes[0] === SERIALIZATION.NUMBER) {
-      return decodeFloat(resultBytes.subarray(1, 9));
-    } else if (resultBytes[0] === SERIALIZATION.DATE) {
-      const date = new Date();
-      date.setTime(decodeFloat(resultBytes.subarray(1, 9)));
-      return date;
-    } else if (resultBytes[0] === SERIALIZATION.KNOWN_SYMBOL) {
-      const symbol = KNOWN_SYMBOLS[resultBytes[1]];
-      return symbol;
-    }
-    // Variable length primitives. We already read all of their data
-    else if (resultBytes[0] === SERIALIZATION.STRING) {
-      // Note: This *copies* the entire thing, because you aren't allowed to call decode on a SharedArrayBuffer
-      return textDecoder.decode(resultBytes.slice(1, numberOfBytes + 1));
-    } else if (resultBytes[0] === SERIALIZATION.BIGINT) {
-      return BigInt(
-        textDecoder.decode(resultBytes.slice(1, numberOfBytes + 1)),
-      );
-    }
-    // Object. Serialized as ID, guaranteed to fit into shared memory
-    else if (resultBytes[0] === SERIALIZATION.OBJECT) {
-      const id = textDecoder.decode(resultBytes.slice(1, numberOfBytes + 1));
-      return this.getObjectProxy(id);
-    } else {
-      console.warn("Unknown type", resultBytes[0]);
-      return null;
-    }
+  private request(message: ProxyMessage): any {
+    const payload = this.channel.request(() => this.postMessage(message));
+    return settled.unwrap(codec.decode(payload, this.references) as Settled);
   }
 
   /**
@@ -421,324 +192,132 @@ export class ObjectProxyClient {
    */
   private proxyReflect(
     method: keyof typeof Reflect,
-    targetId: string,
+    target: string,
     args: any[],
   ) {
-    let value: any = undefined;
-    try {
-      this.memory.lockWorker();
-      this.memory.lockSize();
-      this.memory.writeSize(0);
-      if (method === "apply") {
-        // Special case for "apply"
-        this.postMessage({
-          type: "proxy_reflect",
-          method: method,
-          target: targetId,
-          thisArg: args[0],
-          args: args[1].map((v: any[]) => this.serializePostMessage(v)),
-        });
-      } else {
-        this.postMessage({
-          type: "proxy_reflect",
-          method: method,
-          target: targetId,
-          args: args.map((v) => this.serializePostMessage(v)),
-        });
-      }
+    const message: ProxyMessage =
+      method === "apply"
+        ? {
+            type: "proxy_reflect",
+            method,
+            target,
+            thisArg: args[0],
+            args: this.encodeArguments(args[1]),
+          }
+        : {
+            type: "proxy_reflect",
+            method,
+            target,
+            args: this.encodeArguments(args),
+          };
 
-      this.memory.waitForSize();
-      value = this.deserializeMemory(this.memory);
-    } catch (e) {
-      console.error({ method, targetId, args });
-      console.error(e);
-      this.postMessage({
-        type: "proxy_print_object",
-        target: targetId,
-      });
-    } finally {
-      // Regardless of what happened, unlock the size and the worker
-      this.memory.forceUnlockSize();
-      this.memory.unlockWorker();
-    }
-    return value;
+    return this.request(message);
   }
 
-  private proxyPromise(
-    method: "then",
-    targetId: string,
-  ): { value?: any; error?: any } {
-    let value: any = undefined;
-    try {
-      this.memory.lockWorker();
-      this.memory.lockSize();
-      this.memory.writeSize(0);
-
-      this.postMessage({
-        type: "proxy_promise",
-        method: method,
-        target: targetId,
-      });
-
-      this.memory.waitForSize();
-      value = this.deserializeMemory(this.memory);
-    } catch (e) {
-      console.error({ method, targetId });
-      console.error(e);
-      this.postMessage({
-        type: "proxy_print_object",
-        target: targetId,
-      });
-    } finally {
-      // Regardless of what happened, unlock the size and the worker
-      this.memory.forceUnlockSize();
-      this.memory.unlockWorker();
-    }
-    return value;
+  private encodeArguments(args: any[]) {
+    return codec.encode(args, this.references);
   }
 
-  /** Checks if an id encodes a function. Mostly a silly hack to ensure that proxies can work as expected */
   private isFunction(id: string) {
-    return id.endsWith("-f");
+    return id.startsWith(`${FUNCTION_KIND}:`);
   }
 
   /**
    * Gets a proxy object for a given id
    */
   getObjectProxy<T = any>(id: string): T {
+    const existing = this.proxies.get(id)?.deref();
+    if (existing !== undefined) return existing as T;
+
+    const created = this.createProxy(id);
+    this.proxies.set(id, new WeakRef(created));
+    this.collected.register(created, id);
+    return created as T;
+  }
+
+  private createProxy(id: string) {
     const client = this;
 
     return new Proxy(this.isFunction(id) ? function () {} : {}, {
       get(target, prop, receiver) {
-        if (prop === ObjectId) {
-          return id;
-        }
+        if (prop === ObjectId) return id;
 
-        // const value = Reflect.get(target, prop, receiver);
         const value = client.proxyReflect("get", id, [prop, receiver]);
-
         if (typeof value !== "function") return value;
-        // TODO: Special handling for .bind, .apply and more
-        /* Functions needprivate getThisArgIdOrUndefined(thisArg: any) {
-  if (thisArg && (typeof thisArg === "object" || typeof thisArg === "function")) {
-    const id = (thisArg as any)[ObjectId];
-    if (typeof id === "string") return id;
-  }
-  return undefined;
-} special handling
+
+        /* Functions need special handling
          * https://stackoverflow.com/questions/27983023/proxy-on-dom-element-gives-error-when-returning-functions-that-implement-interfa
          * https://stackoverflow.com/questions/37092179/javascript-proxy-objects-dont-work
          */
         return new Proxy(value, {
           apply(_, thisArg, argumentsList) {
-            // thisArg: the object the function was called with. Can be the proxy or something else
-            // receiver: the object the propery was gotten from. Is always the proxy or something inheriting from the proxy
-            // target: the original object
-
             const calledWithProxy = thisArg === receiver;
-
-            // return Reflect.apply(value, calledWithProxy ? target : thisArg, args);
-            const functionReturnValue = client.proxyReflect(
-              "apply",
-              value[ObjectId],
-              [calledWithProxy ? id : thisArg[ObjectId], argumentsList],
-            );
-            return functionReturnValue;
+            return client.proxyReflect("apply", idOf(value)!, [
+              calledWithProxy ? id : idOf(thisArg),
+              argumentsList,
+            ]);
           },
         });
       },
       set(target, prop, value, receiver) {
-        // return Reflect.set(target, prop, value, receiver);
         return client.proxyReflect("set", id, [prop, value, receiver]);
       },
       ownKeys(target) {
-        // return Reflect.ownKeys(target);
         return client.proxyReflect("ownKeys", id, []);
       },
       has(target, prop) {
-        // return Reflect.has(target, prop);
         return client.proxyReflect("has", id, [prop]);
       },
       defineProperty(target, prop, attributes) {
-        // return Reflect.defineProperty(target, prop, attributes);
         return client.proxyReflect("defineProperty", id, [prop, attributes]);
       },
       deleteProperty(target, prop) {
-        // return Reflect.deleteProperty(target, prop);
         return client.proxyReflect("deleteProperty", id, [prop]);
       },
-      // TODO: Those functions might be interesting as well
-      /*
-      getOwnPropertyDescriptor(target, prop) {
-        // return Reflect.getOwnPropertyDescriptor(target, prop);
-        return client.proxyReflect("getOwnPropertyDescriptor", id, [prop]);
-      },
-      isExtensible(target) {
-        // return Reflect.isExtensible(target);
-        return client.proxyReflect("isExtensible", id, []);
-      },
-      preventExtensions(target) {
-        // return Reflect.preventExtensions(target);
-        return client.proxyReflect("preventExtensions", id, []);
-      },
-      getPrototypeOf(target) {
-        // return Reflect.getPrototypeOf(target);
-        return client.proxyReflect("getPrototypeOf", id, []);
-      },
-      setPrototypeOf(target, proto) {
-        // return Reflect.setPrototypeOf(target, proto);
-        return client.proxyReflect("setPrototypeOf", id, [proto]);
-      },*/
-
-      // For function objects
       apply(target, thisArg, argumentsList) {
-        // Note: It can happen that a function gets called with a thisArg that cannot be serialized (due to it being an object on the worker thread)
-        // One solution is to provide a `[ObjectId]: ""` property
-        // TODO: Can it also happen that a function gets called with an easily serializeable thisArg that doesn't have an ObjectId?
-        // return Reflect.apply(target, thisArg, argumentsList);
-        return client.proxyReflect("apply", id, [
-          thisArg[ObjectId],
-          argumentsList,
-        ]);
+        return client.proxyReflect("apply", id, [idOf(thisArg), argumentsList]);
       },
+      /*
+       * getOwnPropertyDescriptor, getPrototypeOf and isExtensible are left to
+       * the empty local target on purpose: each would cost a blocking round
+       * trip on operations that ask for them implicitly. Reflection over a
+       * proxy (Object.keys, spread, instanceof) therefore describes the local
+       * target, not the object on the other thread.
+       */
       construct(target, argumentsList, newTarget) {
-        // return Reflect.construct(target, argumentsList, newTarget)
         return client.proxyReflect("construct", id, [argumentsList, newTarget]);
-      },
-    }) as T;
-  }
-
-  /**
-   * Wraps an object in a proxy that does not proxy certain properties
-   */
-  wrapExcluderProxy<T extends object>(
-    obj: T,
-    underlyingObject: T,
-    exclude: Set<string | symbol>,
-  ): T {
-    return new Proxy<T>(obj, {
-      get(target, prop, receiver) {
-        if (exclude.has(prop)) {
-          target = underlyingObject;
-        }
-
-        const value = Reflect.get(target, prop, receiver);
-
-        if (typeof value !== "function") return value;
-        return new Proxy(value, {
-          apply(_, thisArg, args) {
-            const calledWithProxy = thisArg === receiver;
-            return Reflect.apply(
-              value,
-              calledWithProxy ? target : thisArg,
-              args,
-            );
-          },
-        });
-      },
-      has(target, prop) {
-        if (exclude.has(prop)) {
-          target = underlyingObject;
-        }
-        return Reflect.has(target, prop);
       },
     });
   }
 
   /**
-   * Blocks until an proxy object promise has returned a result or an error
+   * Blocks until a proxied promise has returned a result or an error
    */
-  thenSync<T>(obj: Promise<T>): T {
-    const objectId = (obj as any)[ObjectId];
-    if (!objectId) {
-      throw new Error("Not a proxy object");
-    }
-    const result = this.proxyPromise("then", objectId);
-    if (result.error) {
-      throw result.error;
-    }
-    return result.value;
-  }
-
-  private getIdOrFallback(x: any, fallbackId: string): string {
-    if (x && (typeof x === "object" || typeof x === "function")) {
-      const id = (x as any)[ObjectId];
-      if (typeof id === "string" && id.length) return id;
-    }
-    return fallbackId;
-  }
-}
-
-function isSimplePrimitive(value: any) {
-  if (value === undefined) {
-    return true;
-  } else if (value === null) {
-    return true;
-  } else if (value === false) {
-    return true;
-  } else if (value === true) {
-    return true;
-  } else if (typeof value === "number") {
-    return true;
-  } else if (value instanceof Date) {
-    return true;
-  } else {
-    return false;
-  }
-}
-
-function isSymbolPrimitive(value: any) {
-  if (typeof value === "symbol" && KNOWN_SYMBOLS.includes(value)) {
-    return true;
-  }
-  return false;
-}
-
-function isVariableLengthPrimitive(value: any) {
-  if (typeof value === "string") {
-    return true;
-  } else if (typeof value === "bigint") {
-    return true;
+  thenSync<T>(value: Promise<T>): T {
+    const target = idOf(value);
+    if (target === undefined) throw new Error("Not a proxy object");
+    return this.request({ type: "proxy_promise", method: "then", target });
   }
 }
 
 export type ProxyMessages = {
-  proxy_reflect:
-    | {
-        method: Exclude<keyof typeof Reflect, "apply">;
-        /**
-         * An object id
-         */
-        target: string;
-        /**
-         * Further parameters. Have to be serialized
-         */
-        args?: any[];
-      }
-    | {
-        method: "apply";
-        /**
-         * An object id
-         */
-        target: string;
-        /**
-         * An object id
-         */
-        thisArg: string;
-        /**
-         * Further parameters. Have to be serialized
-         */
-        args?: any[];
-      };
-
-  proxy_shared_memory: {
-    /** For requesting more bytes from the shared memory*/
-  };
-  proxy_print_object: {
+  proxy_reflect: {
+    method: keyof typeof Reflect;
+    /** An object id */
     target: string;
+    /** An object id, only present when the method is "apply" */
+    thisArg?: string;
+    /** Further parameters, encoded by the codec */
+    args: Uint8Array;
   };
+
   proxy_promise: {
     method: "then";
+    target: string;
+  };
+
+  proxy_release: {
+    /** An object id the worker no longer has a proxy for */
     target: string;
   };
 };

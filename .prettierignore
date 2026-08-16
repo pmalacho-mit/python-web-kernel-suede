@@ -1,0 +1,7 @@
+node_modules
+build
+.svelte-kit
+package-lock.json
+sweater-vest-suede*
+release/pyodide/supported-packages.ts
+src/lib/testing/workspaces

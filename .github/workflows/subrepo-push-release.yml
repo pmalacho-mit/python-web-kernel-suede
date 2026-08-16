@@ -6,7 +6,21 @@ on:
       - "release/**"
 
 jobs:
+  # release/ is consumed downstream by subrepo, with no version bump to warn
+  # anyone, so nothing ships without a green suite.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
   push:
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -1,0 +1,72 @@
+import { describe, expect, it } from "vitest";
+import { contents, resizeBytes } from "../release/contents";
+
+const utf8 = new TextEncoder();
+const allByteValues = Uint8Array.from({ length: 256 }, (_, index) => index);
+
+describe("interpreting contents", () => {
+  it("encodes text as utf-8", () => {
+    expect(contents.toBytes("🐍")).toEqual(utf8.encode("🐍"));
+  });
+
+  it("passes bytes through untouched", () => {
+    expect(contents.toBytes(allByteValues)).toBe(allByteValues);
+  });
+
+  it("measures text in bytes rather than characters", () => {
+    expect(contents.byteLength("🐍é")).toBe(6);
+    expect(contents.byteLength("ascii")).toBe(5);
+  });
+
+  it("reads valid utf-8 back as text", () => {
+    expect(contents.fromBytes(utf8.encode("héllo 🐍"))).toBe("héllo 🐍");
+  });
+
+  it("leaves bytes that are not utf-8 as bytes", () => {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    expect(contents.fromBytes(png)).toBe(png);
+  });
+
+  it("leaves a truncated multi byte sequence as bytes", () => {
+    expect(contents.fromBytes(utf8.encode("🐍").subarray(0, 2))).toBeInstanceOf(
+      Uint8Array,
+    );
+  });
+
+  it("round trips any text through bytes and back", () => {
+    for (const text of ["", "ascii", "café", "日本語", "🐍🎉", "a\u0000b"])
+      expect(contents.fromBytes(contents.toBytes(text))).toBe(text);
+  });
+
+  it("round trips arbitrary bytes through the text guess", () => {
+    const guessed = contents.fromBytes(allByteValues);
+    expect(contents.toBytes(guessed)).toEqual(allByteValues);
+  });
+
+  it("compares text and bytes that mean the same thing", () => {
+    expect(contents.equal("🐍", utf8.encode("🐍"))).toBe(true);
+    expect(contents.equal("a", utf8.encode("b"))).toBe(false);
+    expect(contents.equal("ab", "abc")).toBe(false);
+  });
+});
+
+describe("resizing", () => {
+  it("pads with zeroes when growing", () => {
+    expect(resizeBytes(new Uint8Array([1, 2]), 4)).toEqual(
+      new Uint8Array([1, 2, 0, 0]),
+    );
+  });
+
+  it("cuts when shrinking", () => {
+    expect(resizeBytes(new Uint8Array([1, 2, 3]), 2)).toEqual(
+      new Uint8Array([1, 2]),
+    );
+  });
+
+  it("copies rather than aliasing when the size is unchanged", () => {
+    const original = new Uint8Array([1, 2, 3]);
+    const resized = resizeBytes(original, 3);
+    resized[0] = 9;
+    expect(original[0]).toBe(1);
+  });
+});
