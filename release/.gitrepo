@@ -6,7 +6,7 @@
 [subrepo]
 remote = https://github.com/pmalacho-mit/python-web-kernel-suede
 branch = release
-	commit = 88385353cd151f8f3d4bc8d5db14e8ce54b08c79
-	parent = dec5c261a6ed063e2f7088c29af6c759ca13ad49
+	commit = 98bbeb63e2a6c005062a462690ccfdf534b59573
+	parent = 44c390c4114e425d80e464696e0595cd66869c75
 	method = merge
 	cmdver = 0.4.9
