@@ -210,6 +210,35 @@ describe("references", () => {
   });
 });
 
+describe("identity", () => {
+  const remote = (id: string) => {
+    const value = { looks: "plain" };
+    const references: References = {
+      identify: (candidate) => (candidate === value ? id : undefined),
+      encode: () => id,
+      decode: (found) => (found === id ? value : undefined),
+    };
+    return { value, references };
+  };
+
+  it("sends a value the other thread owns by reference, not by shape", () => {
+    const { value, references } = remote("host-1");
+    expect(roundTrip(value, references)).toBe(value);
+  });
+
+  it("sends one nested inside a structure by reference too", () => {
+    const { value, references } = remote("host-1");
+    expect(roundTrip({ held: [value] }, references)).toEqual({ held: [value] });
+  });
+
+  it("still copies values the other thread does not own", () => {
+    const { references } = remote("host-1");
+    const local = { looks: "plain" };
+    expect(roundTrip(local, references)).not.toBe(local);
+    expect(roundTrip(local, references)).toEqual(local);
+  });
+});
+
 describe("framing", () => {
   it("rejects decoding straight out of shared memory", () => {
     const shared = new Uint8Array(new SharedArrayBuffer(16));
@@ -218,6 +247,18 @@ describe("framing", () => {
   });
 
   it("rejects an unknown tag", () => {
-    expect(() => codec.decode(new Uint8Array([200]))).toThrow(CodecError);
+    const encoded = codec.encode(true);
+    expect(() => codec.decode(Uint8Array.of(encoded[0], 200))).toThrow(CodecError);
+  });
+
+  it("rejects a payload from a different version of the codec", () => {
+    const encoded = codec.encode("hello");
+    encoded[0] += 1;
+    expect(() => codec.decode(encoded)).toThrow(/version/);
+  });
+
+  it("says a payload is truncated rather than mis-reading it", () => {
+    const encoded = codec.encode("a longer string than survives the cut");
+    expect(() => codec.decode(encoded.slice(0, 6))).toThrow(/truncated/);
   });
 });

@@ -49,8 +49,15 @@ const kernel = new Kernel(
 - **Every method may return a promise.** Python is blocked on the worker while
   the main thread settles it, so reading from IndexedDB, the network, or a user
   prompt needs no extra machinery. `input` may return a promise too.
-- **`stat` is optional.** Provide it when a path's size is cheaper to answer
-  than its contents; without it, sizes are measured by reading the file.
+- **Provide `stat` if you can.** Every `lookup` and every `getattr` asks for
+  one, so `os.path.getsize`, `os.listdir` on a populated directory, and opening
+  a file all go through it. Without `stat`, each of those reads the **whole
+  file** across the bridge just to learn its size. Files that are large, remote,
+  or expensive to produce are the ones that suffer.
+- **Writes reach `put` when the file is closed**, not as they happen. An open
+  file is held whole in the worker, so `put` is called once per open file rather
+  than once per write — but Python's `flush()` does not reach you, and a run
+  terminated mid-write never gets to `put` at all.
 
 `Kernel.assetURL({ path })` reads a file out of that filesystem and returns a
 `data:` URL for it, and `Kernel.AssetUrl({ value, path })` builds one from
@@ -62,9 +69,9 @@ By default Pyodide itself is fetched from jsDelivr. Pass `indexURL` to
 ## Development
 
 ```bash
-npm test                     # the bridge, codec, and filesystem, in node
-npm run dev                  # then open /tests
-./scripts/browser-tests.sh   # the same page, driven headlessly, as a report
+npm test              # the bridge, codec, and filesystem, in node
+npm run dev           # then open /tests
+npm run test:browser  # the same page, driven headlessly, as a report
 ```
 
 `npm test` covers everything that does not need a browser ([tests/](./tests)),
@@ -103,9 +110,11 @@ and no more of them run at once than the machine has cores.
 
 ### Running the report
 
-`./scripts/browser-tests.sh` needs `npm run dev` running and Docker available.
-[browser-container.sh](./scripts/browser-container.sh) does the setup the kernel
-forces on it: the browser only exposes `SharedArrayBuffer` to a cross-origin
-isolated page on an origin it trusts, so the dev server is forwarded onto the
-browser's own loopback address, and behind an intercepting proxy its CA is
-installed so Pyodide can be fetched at all.
+`npm run test:browser` needs `npm run dev` running and Docker available. It
+drives the same `/tests` page through a containerized Chromium and writes
+`fashion-show.md`.
+
+The kernel needs `SharedArrayBuffer`, which a browser only exposes to a
+cross-origin isolated page on an origin it trusts, so sweater-vest forwards the
+dev server onto the browser's own loopback address; behind an intercepting proxy
+it also installs the CA, without which Pyodide cannot be fetched at all.

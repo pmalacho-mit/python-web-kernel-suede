@@ -215,6 +215,25 @@ describe("metadata", () => {
     expect(mount.calls).toEqual(["stat /logo.png"]);
   });
 
+  it("reports what an open file holds, not what the host last stored", () => {
+    const mount = mounted([["draft.txt", ""]]);
+    const node = mount.nodeOps.lookup(mount.root, "draft.txt");
+    const stream: any = { object: node, flags: 0, position: 0 };
+    mount.streamOps.open!(stream);
+    mount.streamOps.write!(stream, utf8.encode("written but not closed"), 0, 22, 0);
+    expect(mount.nodeOps.getattr(node).size).toBe(22);
+  });
+
+  it("reports the stored size again once the file is closed", () => {
+    const mount = mounted([["draft.txt", ""]]);
+    const node = mount.nodeOps.lookup(mount.root, "draft.txt");
+    const stream: any = { object: node, flags: 0, position: 0 };
+    mount.streamOps.open!(stream);
+    mount.streamOps.write!(stream, utf8.encode("abc"), 0, 3, 0);
+    mount.streamOps.close!(stream);
+    expect(mount.nodeOps.getattr(node).size).toBe(3);
+  });
+
   it("looks a directory up as a directory", () => {
     const mount = mounted([["pkg", null]]);
     expect(mount.nodeOps.lookup(mount.root, "pkg").mode).toBe(DIR_MODE);

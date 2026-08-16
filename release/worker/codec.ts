@@ -28,11 +28,21 @@ export const KNOWN_SYMBOLS = [
  * the live object on the other.
  */
 export interface References {
+  /**
+   * The id this value already has on the other thread, if it has one.
+   *
+   * Consulted before anything is inspected structurally, because a proxy for a
+   * remote object looks exactly like a plain object from the outside: its
+   * identity is the whole of its meaning, and encoding its shape instead would
+   * quietly send an empty record in its place.
+   */
+  identify?(value: object | Function): string | undefined;
   encode(value: object | Function): string;
   decode(id: string): unknown;
 }
 
 const withoutReferences: References = {
+  identify: () => undefined,
   encode(value) {
     throw new CodecError(`Cannot encode ${describe(value)} without references`);
   },
@@ -45,6 +55,9 @@ const describe = (value: unknown) =>
   typeof value === "function"
     ? `function ${(value as Function).name || "(anonymous)"}`
     : `an instance of ${(value as object)?.constructor?.name ?? "unknown"}`;
+
+/** Bumped whenever the meaning of what follows changes. */
+const VERSION = 1;
 
 const TAG = {
   undefined: 0,
@@ -127,27 +140,33 @@ class Reader {
     this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   }
 
+  /** Reading past the end means the payload was truncated, not that it lied. */
+  private take(count: number) {
+    const start = this.offset;
+    if (start + count > this.bytes.byteLength)
+      throw new CodecError(
+        `Payload is truncated: wanted ${count} bytes at ${start} of ${this.bytes.byteLength}`,
+      );
+    this.offset += count;
+    return start;
+  }
+
   u8() {
-    return this.bytes[this.offset++];
+    return this.bytes[this.take(1)];
   }
 
   u32() {
-    const value = this.view.getUint32(this.offset, true);
-    this.offset += 4;
-    return value;
+    return this.view.getUint32(this.take(4), true);
   }
 
   f64() {
-    const value = this.view.getFloat64(this.offset, true);
-    this.offset += 8;
-    return value;
+    return this.view.getFloat64(this.take(8), true);
   }
 
   blob() {
     const length = this.u32();
-    const value = this.bytes.subarray(this.offset, this.offset + length);
-    this.offset += length;
-    return value;
+    const start = this.take(length);
+    return this.bytes.subarray(start, start + length);
   }
 
   text() {
@@ -209,6 +228,10 @@ const writeSymbolAs = (writer: Writer, kind: number, key: string) => {
   writer.text(key);
 };
 
+/**
+ * A symbol that is neither well known nor registered has no counterpart on the
+ * other thread, so it arrives as a new symbol carrying the same description.
+ */
 const readSymbol = (reader: Reader): symbol => {
   const kind = reader.u8();
   const key = reader.text();
@@ -283,7 +306,9 @@ const encoders: Record<Tag, (w: Writer, value: any, context: Context) => void> =
     [TAG.array]: (w, value: unknown[], c) =>
       writeValues(w, value, value.length, c),
     [TAG.set]: (w, value: Set<unknown>, c) => writeValues(w, value, value.size, c),
-    [TAG.record]: (w, value: object, c) => writeFields(w, Object.entries(value), c),
+      /** Own enumerable string keys only: symbol keys and getters are not sent. */
+    [TAG.record]: (w, value: object, c) =>
+      writeFields(w, Object.entries(value), c),
     [TAG.map]: (w, value: Map<unknown, unknown>, c) =>
       writeValues(w, flatten(value), value.size * 2, c),
     [TAG.error]: (w, value: Error) => writeError(w, value),
@@ -325,7 +350,19 @@ const enterContainer = ({ seen }: Context, value: object) => {
   seen.add(value);
 };
 
+/** Only objects and functions can belong to the other thread. */
+const identifierOf = (value: unknown, { references }: Context) =>
+  value !== null && (typeof value === "object" || typeof value === "function")
+    ? references.identify?.(value as object)
+    : undefined;
+
 const write = (writer: Writer, value: unknown, context: Context) => {
+  const identifier = identifierOf(value, context);
+  if (identifier !== undefined) {
+    writer.u8(TAG.reference);
+    return writer.text(identifier);
+  }
+
   const tag = classify(value);
   writer.u8(tag);
   if (!CONTAINERS.has(tag)) return encoders[tag](writer, value, context);
@@ -347,14 +384,30 @@ const rejectShared = (bytes: Uint8Array) => {
   return bytes;
 };
 
+const readVersion = (reader: Reader) => {
+  const version = reader.u8();
+  if (version !== VERSION)
+    throw new CodecError(
+      `Payload is version ${version}, but this codec speaks version ${VERSION}`,
+    );
+};
+
 export const codec = {
+  /**
+   * The same value appearing twice is written twice: only cycles are refused,
+   * not repetition. Payloads here are small and shallow enough that an index
+   * table would cost more than it saves.
+   */
   encode(value: unknown, references: References = withoutReferences) {
     const writer = new Writer();
+    writer.u8(VERSION);
     write(writer, value, { references, seen: new Set() });
     return writer.finish();
   },
 
   decode(bytes: Uint8Array, references: References = withoutReferences) {
-    return read(new Reader(rejectShared(bytes)), { references, seen: new Set() });
+    const reader = new Reader(rejectShared(bytes));
+    readVersion(reader);
+    return read(reader, { references, seen: new Set() });
   },
 };

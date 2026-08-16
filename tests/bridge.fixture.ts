@@ -13,6 +13,7 @@ export type Task =
   | { id: number; kind: "read"; path: string[] }
   | { id: number; kind: "apply"; path: string[]; args: unknown[] }
   | { id: number; kind: "awaited"; path: string[]; args: unknown[] }
+  | { id: number; kind: "reflect"; path: string[]; argument: string[] }
   | { id: number; kind: "fileSystem"; method: keyof SyncFileSystem; args: unknown[] };
 
 export type Outcome = {
@@ -23,14 +24,15 @@ export type Outcome = {
   error?: string;
 };
 
-const { buffers, rootId } = workerData as {
+const { buffers, rootId, patience } = workerData as {
   buffers: AsyncMemory.Buffers;
   rootId: string;
+  patience?: { interval: number; limit: number };
 };
 
 const post = (message: any) => parentPort!.postMessage(message);
 
-const bridge = new WorkerBridge(buffers, post);
+const bridge = new WorkerBridge(buffers, post, patience);
 const root = bridge.objects.getObjectProxy(rootId);
 const fileSystem = bridge.calls.facade<SyncFileSystem>("fs", [
   "get",
@@ -55,6 +57,8 @@ const perform = (task: Task): unknown => {
   if (task.kind === "apply") return applyAt(task.path, task.args);
   if (task.kind === "awaited")
     return bridge.objects.thenSync(applyAt(task.path, task.args));
+  if (task.kind === "reflect")
+    return applyAt(task.path, [walk(task.argument)]);
   return (fileSystem[task.method] as any)(...task.args);
 };
 

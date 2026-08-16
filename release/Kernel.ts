@@ -218,11 +218,14 @@ export default class PythonKernel {
     let executing = false;
     let doExecute = true;
 
+    /**
+     * Once the worker has been asked to run, only the interrupt buffer can stop
+     * it — and the queue stays held until it reports back, so the next run
+     * cannot overlap this one.
+     */
     const interrupt = () => {
-      if (executing) {
-        this.interrupt();
-        done.resolve();
-      } else doExecute = false;
+      if (executing) this.interrupt();
+      else doExecute = false;
     };
 
     const result = new Promise<Output.Specific[]>(async (resolve) => {
@@ -244,6 +247,7 @@ export default class PythonKernel {
         const loaded = this.signal("loaded");
         const finished = this.signal("finished");
 
+        executing = true;
         this.post({
           type: "run",
           code,
@@ -253,10 +257,7 @@ export default class PythonKernel {
         } satisfies Kernel.Request<"run">);
 
         await loaded;
-        if (!doExecute) return resolve(outputs);
         await finished;
-
-        executing = true;
       } catch (e: any) {
         this.callbacks.output?.(
           make("error", {
@@ -266,6 +267,7 @@ export default class PythonKernel {
           }),
         );
       } finally {
+        executing = false;
         done.resolve();
         on?.complete?.(outputs);
         resolve(outputs);

@@ -13,11 +13,15 @@ type Unidentified<T> = T extends unknown ? Omit<T, "id"> : never;
 type Request = Unidentified<Task>;
 
 /** A worker running the real blocking protocol against a host on this thread. */
-const start = (targets: SyncCallTargets, root: object = {}) => {
+const start = (
+  targets: SyncCallTargets,
+  root: object = {},
+  patience?: { interval: number; limit: number },
+) => {
   const bridge = new HostBridge(targets, SMALL_CAPACITY);
   const rootId = bridge.objects.registerRootObject(root);
   const worker = new Worker(new URL("./bridge.fixture.ts", import.meta.url), {
-    workerData: { buffers: bridge.buffers, rootId },
+    workerData: { buffers: bridge.buffers, rootId, patience },
     execArgv: ["--import", "tsx"],
   });
 
@@ -47,8 +51,12 @@ const start = (targets: SyncCallTargets, root: object = {}) => {
 
 let running: { stop: () => Promise<number> } | undefined;
 
-const harness = (targets: SyncCallTargets, root?: object) => {
-  const started = start(targets, root);
+const harness = (
+  targets: SyncCallTargets,
+  root?: object,
+  patience?: { interval: number; limit: number },
+) => {
+  const started = start(targets, root, patience);
   running = started;
   return started;
 };
@@ -120,6 +128,36 @@ describe("calls into the host", () => {
     expect(outcome.error).toContain("math.double");
   });
 
+  it("gives up on a host that never answers", async () => {
+    const { run } = harness(
+      { slow: { forever: () => new Promise(() => {}) } },
+      {},
+      { interval: 25, limit: 300 },
+    );
+    const outcome = await run({
+      kind: "call",
+      target: "slow",
+      method: "forever",
+      args: [],
+    });
+    expect(outcome.error).toContain("did not answer");
+  });
+
+  it("keeps working after giving up on one", async () => {
+    const { run, value } = harness(
+      {
+        slow: { forever: () => new Promise(() => {}) },
+        math: { double: (n: number) => n * 2 },
+      },
+      {},
+      { interval: 25, limit: 300 },
+    );
+    await run({ kind: "call", target: "slow", method: "forever", args: [] });
+    expect(
+      await value({ kind: "call", target: "math", method: "double", args: [4] }),
+    ).toBe(8);
+  });
+
   it("keeps answering after a failure", async () => {
     const { value, run } = harness({
       math: {
@@ -180,7 +218,18 @@ describe("payloads", () => {
 describe("proxied objects", () => {
   const root = {
     title: "kernel",
+    secret: 42,
+    /** Reads `this`, so it only answers when the real receiver crosses back. */
+    get answer() {
+      return this.secret;
+    },
     nested: { deep: { count: 3 } },
+    /** Not a plain object, so it crosses by reference rather than by copy. */
+    clock: new (class Clock {
+      readonly ticks = 7;
+    })(),
+    describes: (value: unknown) =>
+      value === root.clock ? "the same object" : `a copy: ${JSON.stringify(value)}`,
     greet: (name: string) => `hello ${name}`,
     bytes: () => pattern(3000),
     later: async () => {
@@ -195,6 +244,25 @@ describe("proxied objects", () => {
   it("reads a property", async () => {
     const { value } = harness({}, root);
     expect(await value({ kind: "read", path: ["title"] })).toBe("kernel");
+  });
+
+  it("gives a getter the object it was read from", async () => {
+    const { value } = harness({}, root);
+    expect(await value({ kind: "read", path: ["answer"] })).toBe(42);
+  });
+
+  it("hands a proxied object back to the host as itself", async () => {
+    const { value } = harness({}, root);
+    expect(
+      await value({ kind: "reflect", path: ["describes"], argument: ["clock"] }),
+    ).toBe("the same object");
+  });
+
+  it("copies a plain object rather than proxying it", async () => {
+    const { value } = harness({}, root);
+    expect(
+      await value({ kind: "reflect", path: ["describes"], argument: ["nested"] }),
+    ).toContain("a copy");
   });
 
   it("reads through nested objects", async () => {
@@ -297,5 +365,47 @@ describe("a filesystem answering with promises", () => {
     const { value } = harness({ fs });
     expect(await value(fileSystem({ method: "listDirectory", args: [{ path: "/home/pyodide" }] })))
       .toEqual({ ok: true, data: ["main.py", "logo.png"] });
+  });
+});
+
+describe("reference lifetimes", () => {
+  const host = () => new HostBridge({}, SMALL_CAPACITY).objects;
+
+  it("gives the same object the same id every time", () => {
+    const objects = host();
+    const value = () => "shared";
+    expect(objects.references.encode(value)).toBe(
+      objects.references.encode(value),
+    );
+  });
+
+  it("registers it once, however often it crosses", () => {
+    const objects = host();
+    const value = () => "shared";
+    for (let i = 0; i < 100; i++) objects.references.encode(value);
+    expect(objects.temporaryReferences.size).toBe(1);
+  });
+
+  it("resolves an id back to the object it stood for", () => {
+    const objects = host();
+    const value = { kind: "not plain" };
+    Object.setPrototypeOf(value, { marker: true });
+    expect(objects.references.decode(objects.references.encode(value))).toBe(value);
+  });
+
+  it("forgets an id the worker has finished with", () => {
+    const objects = host();
+    const value = () => "temporary";
+    const id = objects.references.encode(value);
+    objects.releaseTempObject(id);
+    expect(objects.temporaryReferences.size).toBe(0);
+    expect(objects.references.encode(value)).not.toBe(id);
+  });
+
+  it("keeps root objects when a release arrives for them", () => {
+    const objects = host();
+    const id = objects.registerRootObject({ root: true });
+    objects.releaseTempObject(id);
+    expect(objects.getObject(id)).toEqual({ root: true });
   });
 });

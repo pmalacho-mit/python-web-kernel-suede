@@ -6,6 +6,15 @@ import type { Typed } from "../utils";
 
 export const ObjectId = Symbol.for("id");
 
+/**
+ * Whether an id stands for a function is part of the id, because a proxy has to
+ * decide what to wrap before it can ask the other thread anything about it.
+ */
+const FUNCTION_KIND = "f";
+
+const kindOf = (value: unknown) =>
+  typeof value === "function" ? FUNCTION_KIND : "o";
+
 /** The id an object carries when it lives on the other thread. */
 const idOf = (value: any): string | undefined => {
   if (value === null || value === undefined) return undefined;
@@ -46,6 +55,13 @@ export class ObjectProxyHost {
   readonly rootReferences = new Map<string, any>();
   readonly temporaryReferences = new Map<string, any>();
 
+  /**
+   * The id an object was already given. Without it every crossing would mint a
+   * new one, so the same object would arrive as a different object each time
+   * and the registry would grow for as long as the kernel lived.
+   */
+  private readonly identifiers = new WeakMap<object, string>();
+
   readonly references: References = {
     encode: (value) => this.registerTempObject(value),
     decode: (id) => this.getObject(id),
@@ -54,8 +70,7 @@ export class ObjectProxyHost {
   constructor(private readonly channel: ChannelHost) {}
 
   private getId(value: any) {
-    const suffix = typeof value === "function" ? "f" : "o";
-    return `${nanoid()}-${label(value)}-${suffix}`;
+    return `${kindOf(value)}:${nanoid()}-${label(value)}`;
   }
 
   registerRootObject(value: any) {
@@ -65,21 +80,29 @@ export class ObjectProxyHost {
   }
 
   registerTempObject(value: any) {
+    const known = this.identifiers.get(value);
+    if (known !== undefined) return known;
+
     const id = this.getId(value);
     this.temporaryReferences.set(id, value);
+    this.identifiers.set(value, id);
     return id;
   }
 
-  clearTemporary() {
-    this.temporaryReferences.clear();
+  /** Called when the worker has collected the proxy that stood for this id. */
+  releaseTempObject(id: string) {
+    const value = this.temporaryReferences.get(id);
+    if (value === undefined) return;
+    this.temporaryReferences.delete(id);
+    this.identifiers.delete(value);
   }
 
   getObject(id: string) {
     return this.rootReferences.get(id) ?? this.temporaryReferences.get(id);
   }
 
-  respond(result: Settled) {
-    this.channel.send(this.encode(result));
+  respond(result: Settled, request: number) {
+    this.channel.send(this.encode(result), request);
   }
 
   /** A result that cannot be encoded still has to reach the blocked worker. */
@@ -91,10 +114,13 @@ export class ObjectProxyHost {
     }
   }
 
-  handleProxyMessage(message: ProxyMessage) {
+  handleProxyMessage(message: ProxyMessage, request: number) {
     if (message.type === "proxy_reflect")
-      this.respond(settled.capture(() => this.reflect(message)));
-    else if (message.type === "proxy_promise") this.settlePromise(message);
+      this.respond(settled.capture(() => this.reflect(message)), request);
+    else if (message.type === "proxy_promise")
+      this.settlePromise(message, request);
+    else if (message.type === "proxy_release")
+      this.releaseTempObject(message.target);
     else console.warn("Unknown proxy message", message);
   }
 
@@ -106,12 +132,15 @@ export class ObjectProxyHost {
     return (Reflect[message.method] as any)(target, ...args);
   }
 
-  private settlePromise({ target }: ProxyMessages["proxy_promise"]) {
+  private settlePromise(
+    { target }: ProxyMessages["proxy_promise"],
+    request: number,
+  ) {
     const value = this.getObject(target);
-    if (!isThenable(value)) return this.respond({ ok: true, value });
+    if (!isThenable(value)) return this.respond({ ok: true, value }, request);
     value.then(
-      (value) => this.respond({ ok: true, value }),
-      (error) => this.respond(settled.failure(error)),
+      (value) => this.respond({ ok: true, value }, request),
+      (error) => this.respond(settled.failure(error), request),
     );
   }
 }
@@ -122,9 +151,19 @@ export class ObjectProxyHost {
  */
 export class ObjectProxyClient {
   readonly references: References = {
+    identify: (value) => idOf(value),
     encode: (value) => this.referenceTo(value),
     decode: (id) => this.getObjectProxy(id),
   };
+
+  /** One proxy per id, so `===` means the same thing on both threads. */
+  private readonly proxies = new Map<string, WeakRef<any>>();
+
+  /** Tells the host an id is finished with once nothing here refers to it. */
+  private readonly collected = new FinalizationRegistry<string>((id) => {
+    this.proxies.delete(id);
+    this.postMessage({ type: "proxy_release", target: id });
+  });
 
   constructor(
     private readonly channel: ChannelWorker,
@@ -170,15 +209,24 @@ export class ObjectProxyClient {
     return codec.encode(args, this.references);
   }
 
-  /** Checks if an id encodes a function. Mostly a silly hack to ensure that proxies can work as expected */
   private isFunction(id: string) {
-    return id.endsWith("-f");
+    return id.startsWith(`${FUNCTION_KIND}:`);
   }
 
   /**
    * Gets a proxy object for a given id
    */
   getObjectProxy<T = any>(id: string): T {
+    const existing = this.proxies.get(id)?.deref();
+    if (existing !== undefined) return existing as T;
+
+    const created = this.createProxy(id);
+    this.proxies.set(id, new WeakRef(created));
+    this.collected.register(created, id);
+    return created as T;
+  }
+
+  private createProxy(id: string) {
     const client = this;
 
     return new Proxy(this.isFunction(id) ? function () {} : {}, {
@@ -220,37 +268,15 @@ export class ObjectProxyClient {
       apply(target, thisArg, argumentsList) {
         return client.proxyReflect("apply", id, [idOf(thisArg), argumentsList]);
       },
+      /*
+       * getOwnPropertyDescriptor, getPrototypeOf and isExtensible are left to
+       * the empty local target on purpose: each would cost a blocking round
+       * trip on operations that ask for them implicitly. Reflection over a
+       * proxy (Object.keys, spread, instanceof) therefore describes the local
+       * target, not the object on the other thread.
+       */
       construct(target, argumentsList, newTarget) {
         return client.proxyReflect("construct", id, [argumentsList, newTarget]);
-      },
-    }) as T;
-  }
-
-  /**
-   * Wraps an object in a proxy that does not proxy certain properties
-   */
-  wrapExcluderProxy<T extends object>(
-    obj: T,
-    underlyingObject: T,
-    exclude: Set<string | symbol>,
-  ): T {
-    return new Proxy<T>(obj, {
-      get(target, prop, receiver) {
-        if (exclude.has(prop)) target = underlyingObject;
-
-        const value = Reflect.get(target, prop, receiver);
-
-        if (typeof value !== "function") return value;
-        return new Proxy(value, {
-          apply(_, thisArg, args) {
-            const calledWithProxy = thisArg === receiver;
-            return Reflect.apply(value, calledWithProxy ? target : thisArg, args);
-          },
-        });
-      },
-      has(target, prop) {
-        if (exclude.has(prop)) target = underlyingObject;
-        return Reflect.has(target, prop);
       },
     });
   }
@@ -278,6 +304,11 @@ export type ProxyMessages = {
 
   proxy_promise: {
     method: "then";
+    target: string;
+  };
+
+  proxy_release: {
+    /** An object id the worker no longer has a proxy for */
     target: string;
   };
 };

@@ -3,6 +3,7 @@ import {
   ChannelHost,
   ChannelWorker,
   type ChannelChunkMessage,
+  type Patience,
 } from "./channel";
 import {
   ObjectProxyClient,
@@ -15,17 +16,20 @@ import {
   type SyncCallMessages,
   type SyncCallTargets,
 } from "./sync-call";
+import { settled } from "./settled";
 import type { Typed } from "../utils";
 
 export type BridgeMessages = ProxyMessages &
   SyncCallMessages &
   ChannelChunkMessage;
 
-export type BridgeMessage = Typed<BridgeMessages>;
+/** Which request a message belongs to, stamped on as it leaves the worker. */
+export type BridgeMessage = Typed<BridgeMessages> & { request: number };
 
 const BRIDGE_MESSAGE_TYPES = new Set<string>([
   "proxy_reflect",
   "proxy_promise",
+  "proxy_release",
   "sync_call",
   "channel_chunk",
 ]);
@@ -57,10 +61,20 @@ export class HostBridge {
   /** @returns whether the message was addressed to the bridge */
   handle(message: { type: string }) {
     if (!isBridgeMessage(message)) return false;
-    if (message.type === "sync_call") this.calls.respond(message);
+    if (message.type === "sync_call") this.answer(message, message.request);
     else if (message.type === "channel_chunk") this.channel.sendNextChunk();
-    else this.objects.handleProxyMessage(message);
+    else this.objects.handleProxyMessage(message, message.request);
     return true;
+  }
+
+  /**
+   * A worker blocked on an answer has no way to notice that producing one went
+   * wrong, so a failure here still has to reach it as an answer.
+   */
+  private answer(message: SyncCallMessages["sync_call"], request: number) {
+    this.calls
+      .respond(message, request)
+      .catch((error) => this.objects.respond(settled.failure(error), request));
   }
 
   dispose() {
@@ -81,16 +95,20 @@ export class WorkerBridge {
   constructor(
     buffers: AsyncMemory.Buffers,
     postMessage: (message: BridgeMessage) => void,
+    patience?: Patience,
   ) {
     this.memory = new AsyncMemory(buffers);
-    this.channel = new ChannelWorker(this.memory, () =>
-      postMessage({ type: "channel_chunk" }),
+
+    /** Every message says which request it belongs to. */
+    const post = (message: { type: string }) =>
+      postMessage({ ...message, request: this.memory.request } as BridgeMessage);
+
+    this.channel = new ChannelWorker(
+      this.memory,
+      () => post({ type: "channel_chunk" }),
+      patience,
     );
-    this.objects = new ObjectProxyClient(this.channel, postMessage);
-    this.calls = new SyncCallClient(
-      this.channel,
-      postMessage,
-      this.objects.references,
-    );
+    this.objects = new ObjectProxyClient(this.channel, post);
+    this.calls = new SyncCallClient(this.channel, post, this.objects.references);
   }
 }

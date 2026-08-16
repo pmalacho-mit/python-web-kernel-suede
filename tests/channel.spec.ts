@@ -1,21 +1,30 @@
 import { describe, expect, it } from "vitest";
 import { AsyncMemory } from "../release/worker/async-memory";
-import { ChannelHost, ChannelWorker } from "../release/worker/channel";
+import {
+  ChannelHost,
+  ChannelWorker,
+  InterruptedError,
+  UnansweredError,
+} from "../release/worker/channel";
 
 /**
  * The worker only ever blocks on a host that has not answered yet, so a host
  * that answers inside `postMessage` lets both ends run on one thread.
  */
-const loopback = (capacity = AsyncMemory.MINIMUM_CAPACITY) => {
+const loopback = (
+  capacity = AsyncMemory.MINIMUM_CAPACITY,
+  patience = { interval: 25, limit: 500 },
+) => {
   const memory = new AsyncMemory({ capacity });
   const host = new ChannelHost(memory);
   let answer: () => void = () => {};
-  const worker = new ChannelWorker(memory, () => host.sendNextChunk());
+  const worker = new ChannelWorker(memory, () => host.sendNextChunk(), patience);
   return {
     capacity,
     host,
     worker,
-    respondWith: (payload: Uint8Array) => (answer = () => host.send(payload)),
+    respondWith: (payload: Uint8Array) =>
+      (answer = () => host.send(payload, memory.request)),
     receive: () => worker.request(() => answer()),
   };
 };
@@ -99,5 +108,37 @@ describe("disposal", () => {
     channel.host.memory.lockWorker();
     channel.host.memory.dispose();
     expect(locks(channel)).toEqual(free);
+  });
+});
+
+describe("a host that never answers", () => {
+  it("gives up rather than parking forever", () => {
+    const channel = loopback();
+    expect(() => channel.worker.request(() => {})).toThrow(UnansweredError);
+  });
+
+  it("frees the locks when it gives up", () => {
+    const channel = loopback();
+    expect(() => channel.worker.request(() => {})).toThrow();
+    expect(locks(channel)).toEqual(free);
+  });
+
+  it("surfaces an interrupt instead of waiting out the limit", () => {
+    const channel = loopback();
+    expect(() =>
+      channel.worker.request(() => channel.host.memory.interrupt()),
+    ).toThrow(InterruptedError);
+  });
+
+  it("drops an answer to a request that was abandoned", () => {
+    const channel = loopback();
+    expect(() => channel.worker.request(() => {})).toThrow();
+
+    const stale = channel.host.memory.request;
+    channel.respondWith(pattern(16));
+    const payload = channel.receive();
+
+    channel.host.send(pattern(64), stale);
+    expect(payload).toEqual(pattern(16));
   });
 });

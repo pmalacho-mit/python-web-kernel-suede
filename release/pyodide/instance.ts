@@ -17,6 +17,35 @@ const Char = {
   NewLine: 10,
 } as const;
 
+/**
+ * Serves some properties from a local object instead of the proxied one. Purely
+ * local: nothing here crosses to the other thread.
+ */
+const wrapExcluder = <T extends object>(
+  proxied: T,
+  local: T,
+  exclude: Set<string | symbol>,
+): T =>
+  new Proxy<T>(proxied, {
+    get(target, prop, receiver) {
+      if (exclude.has(prop)) target = local;
+
+      const value = Reflect.get(target, prop, receiver);
+
+      if (typeof value !== "function") return value;
+      return new Proxy(value, {
+        apply(_, thisArg, args) {
+          const calledWithProxy = thisArg === receiver;
+          return Reflect.apply(value, calledWithProxy ? target : thisArg, args);
+        },
+      });
+    },
+    has(target, prop) {
+      if (exclude.has(prop)) target = local;
+      return Reflect.has(target, prop);
+    },
+  });
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8");
 
@@ -290,11 +319,7 @@ export class PyodideInstance {
     ]);
 
     return manager.proxy && id
-      ? manager.proxy.wrapExcluderProxy(
-          manager.proxy.getObjectProxy(id),
-          globalThis,
-          noProxy,
-        )
+      ? wrapExcluder(manager.proxy.getObjectProxy(id), globalThis, noProxy)
       : globalThis;
   }
 
