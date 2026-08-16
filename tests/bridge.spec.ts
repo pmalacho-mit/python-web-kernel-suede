@@ -368,6 +368,65 @@ describe("a filesystem answering with promises", () => {
   });
 });
 
+/**
+ * A throw on the host does not fail the worker's assertion, so the host has to
+ * be watched separately or it goes by unnoticed.
+ */
+const watchingTheHost = async (work: () => Promise<void>) => {
+  const raised: string[] = [];
+  const record = (error: unknown) => raised.push(String(error));
+  process.on("uncaughtException", record);
+  process.on("unhandledRejection", record);
+  try {
+    await work();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  } finally {
+    process.off("uncaughtException", record);
+    process.off("unhandledRejection", record);
+  }
+  return raised;
+};
+
+const SLOWER_THAN_PATIENCE = 300;
+const IMPATIENT = { interval: 25, limit: 100 };
+
+describe("a host that answers too late", () => {
+  const late = <T>(value: T) =>
+    new Promise<T>((resolve) => setTimeout(() => resolve(value), SLOWER_THAN_PATIENCE));
+
+  it("leaves the host unharmed when its call is answered too late", async () => {
+    const { run } = harness({ slow: { late: () => late("eventually") } }, {}, IMPATIENT);
+    const raised = await watchingTheHost(async () => {
+      const outcome = await run({ kind: "call", target: "slow", method: "late", args: [] });
+      expect(outcome.error).toContain("did not answer");
+    });
+    expect(raised).toEqual([]);
+  });
+
+  it("leaves the host unharmed when its promise settles too late", async () => {
+    const root = { later: () => late("eventually") };
+    const { run } = harness({}, root, IMPATIENT);
+    const raised = await watchingTheHost(async () => {
+      const outcome = await run({ kind: "awaited", path: ["later"], args: [] });
+      expect(outcome.ok).toBe(false);
+    });
+    expect(raised).toEqual([]);
+  });
+
+  it("still answers the next call", async () => {
+    const { run, value } = harness(
+      { slow: { late: () => late("eventually") }, math: { double: (n: number) => n * 2 } },
+      {},
+      IMPATIENT,
+    );
+    await run({ kind: "call", target: "slow", method: "late", args: [] });
+    await new Promise((resolve) => setTimeout(resolve, SLOWER_THAN_PATIENCE));
+    expect(
+      await value({ kind: "call", target: "math", method: "double", args: [4] }),
+    ).toBe(8);
+  });
+});
+
 describe("reference lifetimes", () => {
   const host = () => new HostBridge({}, SMALL_CAPACITY).objects;
 
@@ -400,6 +459,13 @@ describe("reference lifetimes", () => {
     objects.releaseTempObject(id);
     expect(objects.temporaryReferences.size).toBe(0);
     expect(objects.references.encode(value)).not.toBe(id);
+  });
+
+  it("gives a root object the id it was registered with when it crosses", () => {
+    const objects = host();
+    const value = { root: true };
+    const id = objects.registerRootObject(value);
+    expect(objects.references.encode(value)).toBe(id);
   });
 
   it("keeps root objects when a release arrives for them", () => {
