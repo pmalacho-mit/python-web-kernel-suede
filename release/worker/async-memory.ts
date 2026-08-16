@@ -149,6 +149,14 @@ export class AsyncMemory {
     return Atomics.load(this.lockAndSize, AsyncMemory.REQUEST_INDEX);
   }
 
+  /**
+   * Stops waiting on the current request. Whatever number comes next, it will
+   * not be this one, so an answer that arrives late is recognisably stale.
+   */
+  endRequest() {
+    Atomics.add(this.lockAndSize, AsyncMemory.REQUEST_INDEX, 1);
+  }
+
   isAwaiting(request: number) {
     return Atomics.load(this.lockAndSize, AsyncMemory.REQUEST_INDEX) === request;
   }
@@ -174,6 +182,9 @@ export class AsyncMemory {
 
   /**
    * Should be called from the main thread!
+   * @returns Whether anything was waiting on it. A size that was already
+   * unlocked means the worker stopped waiting, which is a thing the host has to
+   * cope with rather than an invariant it can rely on.
    */
   unlockSize() {
     const oldValue = Atomics.compareExchange(
@@ -182,10 +193,8 @@ export class AsyncMemory {
       AsyncMemory.LOCKED, // old value
       AsyncMemory.UNLOCKED, // new value
     );
-    if (oldValue != AsyncMemory.LOCKED) {
-      throw new Error("Tried to unlock, but was already unlocked");
-    }
     Atomics.notify(this.lockAndSize, AsyncMemory.LOCK_SIZE_INDEX);
+    return oldValue === AsyncMemory.LOCKED;
   }
 
   /**

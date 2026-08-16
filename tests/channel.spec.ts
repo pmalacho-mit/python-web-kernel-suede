@@ -130,6 +130,15 @@ describe("a host that never answers", () => {
     ).toThrow(InterruptedError);
   });
 
+  it("stops waiting on a request the moment it gives up on it", () => {
+    const channel = loopback();
+    const awaited: number[] = [];
+    expect(() =>
+      channel.worker.request(() => awaited.push(channel.host.memory.request)),
+    ).toThrow();
+    expect(channel.host.memory.isAwaiting(awaited[0])).toBe(false);
+  });
+
   it("drops an answer to a request that was abandoned", () => {
     const channel = loopback();
     expect(() => channel.worker.request(() => {})).toThrow();
