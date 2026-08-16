@@ -3,9 +3,11 @@ import devcontainer from "../../sweater-vest-suede.programmatic-docker-suede/dev
 import { container } from "../../sweater-vest-suede.programmatic-docker-suede";
 import {
   buildAndRun,
+  certificates,
   playwright,
   sessionWithTabs,
   type Browser,
+  type Forwarded,
   browsers,
 } from "../../sweater-vest-suede.browser-control-container-suede";
 import { cli } from "../../sweater-vest-suede.typescript-cli-suede";
@@ -37,6 +39,13 @@ export namespace Report {
     component?: RegExp;
     /** Only run tests whose name or id matches this pattern. */
     test?: RegExp;
+    /**
+     * Reach `server` through the browser's own loopback address, so that pages
+     * count as trustworthy origins and are given the secure-context APIs —
+     * SharedArrayBuffer, service workers, `crypto.subtle`, and the rest.
+     * Turn it off to navigate straight to `server` instead.
+     */
+    forward?: boolean;
   };
 
   /**
@@ -79,11 +88,31 @@ export namespace Report {
 }
 
 export const defaults = {
-  server: `http://${devcontainer.ip()}:5173`,
+  server: `http://localhost:5173`,
   closet: `/`,
   browsers: ["chromium"],
   output: "./fashion-show.md",
+  forward: true,
 } as const satisfies Report.Options;
+
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * Where the browser should go, and what has to be forwarded for it to get
+ * there. A loopback address in `server` means the machine running the report,
+ * which is not what `localhost` means inside the browser's container — the
+ * forward is what makes the two agree.
+ */
+const reachable = (server: string, forward: boolean) => {
+  const url = new URL(server);
+  if (!forward || url.protocol !== "http:")
+    return { server, forwards: [] as Forwarded[] };
+
+  const port = Number(url.port || 80);
+  const host = LOOPBACK.has(url.hostname) ? undefined : url.hostname;
+  url.hostname = "localhost";
+  return { server: url.toString(), forwards: [{ port, host }] };
+};
 
 /**
  * Names are scoped by devcontainer id so that a browser container is reused
@@ -267,13 +296,22 @@ const tryRenderMarkdown = async (
 export const generateReport = async (
   options: Report.Options = {},
 ): Promise<Report.Result.Summary | undefined> => {
-  const { closet, browsers, output } = getOrDefaults(
+  const { closet, browsers, output, forward } = getOrDefaults(
     options,
     defaults,
     "browsers",
     "closet",
     "output",
+    "forward",
   );
+
+  const reached = reachable(
+    getOrDefaults(options, defaults, "server").server,
+    forward,
+  );
+
+  /** The urls the browser is sent to, which may not be the ones we were given. */
+  const browsing: Report.Options = { ...options, server: reached.server };
 
   let server: ReportServer | undefined;
 
@@ -287,6 +325,8 @@ export const generateReport = async (
         network: await devcontainer.network(),
         log: true,
         skipIfRunning: true, // can re-use browser container specific to this devcontainer
+        forward: reached.forwards,
+        trustCertificates: await certificates.local(),
       });
       await playwright.ready(name);
     };
@@ -303,14 +343,14 @@ export const generateReport = async (
     server = await startReportServer();
 
     const discover = (browser: Browser) =>
-      sessions.get(browser)!.newTab(urls.discover(options, server!));
+      sessions.get(browser)!.newTab(urls.discover(browsing, server!));
 
     await Promise.all(browsers.map(discover));
 
     const reported: Report.RenderInput = {
       closet,
       generatedAt: new Date().toISOString(),
-      results: await results(server, options, sessions),
+      results: await results(server, browsing, sessions),
     };
 
     printReport(reported, { output });
@@ -334,7 +374,7 @@ export const generateReport = async (
 };
 
 if (cli.entry(import.meta.url)) {
-  const { server, closet, browser, output, test, component } = cli(
+  const { server, closet, browser, output, test, component, forward } = cli(
     "Run the sweater vest report script.",
     cli.flag(
       ["server", "s"],
@@ -365,12 +405,18 @@ if (cli.entry(import.meta.url)) {
       ["component", "m"],
       "Only open components whose path matches this pattern.",
     ),
+    cli.flag(
+      ["forward", "f"],
+      "Reach the server through the browser's own loopback address, so pages count as trustworthy origins.",
+      defaults.forward,
+    ),
   );
 
   generateReport({
     server,
     closet,
     output,
+    forward,
     browsers: browser,
     component: component ? new RegExp(component, "i") : undefined,
     test: test ? new RegExp(test, "i") : undefined,

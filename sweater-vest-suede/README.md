@@ -232,12 +232,13 @@ Open `fashion-show.md` to see the full report with pass/fail status, duration, e
 
 | Flag                    | Shorthand | Description                                             | Default                         |
 | ----------------------- | --------- | ------------------------------------------------------- | ------------------------------- |
-| `--server <url>`        | `-s`      | URL where your dev server is running.                   | `http://<devcontainer-ip>:5173` |
+| `--server <url>`        | `-s`      | URL where your dev server is running.                   | `http://localhost:5173`         |
 | `--closet <path>`       | `-c`      | Path on `server` where `Closet.svelte` is rendered.     | `/`                             |
 | `--browser <name>`      | `-b`      | Browser to use. Repeatable for multi-browser runs.      | `chromium`                      |
 | `--output <path>`       | `-o`      | Output path for the Markdown report. Pass `""` to skip. | `./fashion-show.md`             |
 | `--component <pattern>` | `-m`      | Only open components whose path matches this regex.     | (all)                           |
 | `--test <pattern>`      | `-t`      | Only run tests whose name or id matches this regex.     | (all)                           |
+| `--no-forward`          | `-f`      | Navigate straight to `--server` instead of forwarding it. | (forwards)                    |
 
 Patterns are case-insensitive regular expressions. Tests that don't match `--test` are recorded as `skipped` in the report rather than omitted entirely.
 
@@ -293,6 +294,26 @@ npm run report -- --server http://localhost:5173
 ```
 
 If you need to specify the server URL explicitly (e.g. because the runner is not a devcontainer), pass `--server`. The Docker requirement still applies — ensure the CI runner has Docker available.
+
+### Trustworthy origins
+
+The browser runs in its own container, so `--server` names a machine it has to
+reach across the network — and a page served over plain HTTP from another
+machine is not a trustworthy origin. Browsers withhold the secure-context APIs
+from those pages: `SharedArrayBuffer`, service workers, `crypto.subtle`,
+`getUserMedia`, WebAuthn, persistent storage. A component that needs one finds
+it simply missing, with nothing in the console to say why.
+
+So the report forwards `--server` onto the browser's own loopback address and
+navigates to that instead. `http://localhost:5173` therefore means your dev
+server, not the browser container's own port 5173, and components that need a
+secure context work the same as they do in your own browser. Pass
+`--no-forward` to navigate straight to `--server`.
+
+Certificates this machine trusts (`/usr/local/share/ca-certificates`) are also
+added to the browser, so a devcontainer behind an intercepting proxy can still
+load cross-origin resources. Chromium only — Firefox and WebKit keep their own
+certificate stores.
 
 ---
 
