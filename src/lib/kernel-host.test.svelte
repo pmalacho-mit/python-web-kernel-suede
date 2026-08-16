@@ -1,6 +1,21 @@
 <script lang="ts" module>
   import { Sweater } from "../../sweater-vest-suede";
-  import { inMemoryKernel, run } from "./testing/kernel";
+  import { inMemoryKernel, run, textOf, within } from "./testing/kernel";
+  import type { Output } from "../../release";
+
+  /**
+   * Spins, but gives up on its own after a while. An interrupt that fails to
+   * land should fail this test, not leave a Pyodide worker burning a core for
+   * as long as the page is open.
+   */
+  const SPINS = [
+    "import time",
+    'print("spinning", flush=True)',
+    "deadline = time.time() + 20",
+    "while time.time() < deadline:",
+    "    pass",
+    'print("gave up on its own", flush=True)',
+  ].join("\n");
 
   const asked: string[] = [];
 
@@ -174,5 +189,49 @@
 >
   {#snippet vest(pocket: Pocket)}
     <p>a refused read does not poison the bridge</p>
+  {/snippet}
+</Sweater>
+
+<Sweater
+  name="interrupts a run that would otherwise never end"
+  body={async (harness) => {
+    const pocket = harness.set(new Pocket());
+
+    /** Its own kernel: a spin that outlives the test must not outlive it here. */
+    const { kernel } = inMemoryKernel();
+    harness.onAbort(() => kernel.dispose());
+
+    try {
+      let stop = () => {};
+      const spinning = kernel.run({
+        code: SPINS,
+        path: "spin.py",
+        on: {
+          output: (output: Output.Specific) => {
+            if (textOf(output).includes("spinning")) stop();
+          },
+        },
+      });
+      stop = spinning.interrupt;
+
+      const outputs = await within(
+        60_000,
+        spinning.result,
+        "the interrupted run",
+      );
+      const errors = outputs.filter((output) => output.output_type === "error");
+
+      pocket.detail = errors.map((error: any) => error.ename).join(", ");
+      harness.note(
+        pocket.detail || "no error raised: the interrupt never landed",
+      );
+      harness.expect(pocket.detail).toContain("KeyboardInterrupt");
+    } finally {
+      kernel.dispose();
+    }
+  }}
+>
+  {#snippet vest(pocket: Pocket)}
+    <pre>{pocket.detail}</pre>
   {/snippet}
 </Sweater>

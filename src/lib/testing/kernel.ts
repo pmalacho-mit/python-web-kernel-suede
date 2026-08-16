@@ -112,6 +112,26 @@ export const run = async (
   };
 };
 
+/** Fails with a message rather than hanging the suite when nothing settles. */
+export const within = <T>(
+  milliseconds: number,
+  work: Promise<T>,
+  what: string,
+) =>
+  Promise.race([
+    work,
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () =>
+          reject(new Error(`${what} did not finish within ${milliseconds}ms`)),
+        milliseconds,
+      ),
+    ),
+  ]);
+
+export const textOf = (output: Output.Specific) =>
+  output.output_type === "stream" ? String(output.text) : "";
+
 export const bytes = {
   all: Uint8Array.from({ length: 256 }, (_, index) => index),
   pattern: (length: number) =>

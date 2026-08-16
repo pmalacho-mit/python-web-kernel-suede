@@ -36,7 +36,7 @@ const start = (
    * A worker that cannot start answers nothing, which would otherwise show up
    * as every test in the file waiting out its timeout.
    */
-  worker.on("error", (error) => {
+  worker.on("error", (error: Error) => {
     for (const answer of pending.values())
       answer({
         type: "outcome",
@@ -592,6 +592,16 @@ describe("reference lifetimes", () => {
     expect(objects.references.decode(objects.references.encode(value))).toBe(
       value,
     );
+  });
+
+  it("forgets an id once the worker has collected the proxy for it", async () => {
+    const clock = new (class Clock {
+      readonly ticks = 7;
+    })();
+    const { bridge, value } = harness({}, { clock });
+
+    const id = (await value({ kind: "collect", path: ["clock"] })) as string;
+    expect(bridge.objects.temporaryReferences.has(id)).toBe(false);
   });
 
   it("forgets an id the worker has finished with", () => {
