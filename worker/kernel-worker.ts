@@ -5,6 +5,7 @@ import {
   type SyncFileSystem,
 } from "./emscripten-fs";
 import { WorkerBridge, type BridgeMessages } from "./bridge";
+import type { Patience } from "./channel";
 import { ObjectId, type ObjectProxyClient } from "./object-proxy";
 import { PyodideInstance } from "../pyodide/instance";
 import type { Typed } from "../utils";
@@ -28,6 +29,8 @@ export namespace Kernel {
       globalThisId: string;
       /** Where Pyodide's runtime files are served from. */
       indexURL?: string;
+      /** How long the worker waits on the host before giving up. */
+      patience?: Patience;
       /**
        * The workspace root path for this kernel
        * (assumed to be where all executed files are located)
@@ -66,8 +69,10 @@ export namespace Kernel {
 
 const handler = {
   onInitialize: async (manager, data) => {
-    const bridge = new WorkerBridge(data.buffers, (message) =>
-      manager.postMessage(message),
+    const bridge = new WorkerBridge(
+      data.buffers,
+      (message) => manager.postMessage(message),
+      data.patience,
     );
 
     manager.proxy = bridge.objects;

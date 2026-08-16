@@ -189,24 +189,38 @@ export class PyodideInstance {
     await addToSysPath(this.pyodide!, this.root!);
   }
 
+  /**
+   * Interrupts are checked between bytecodes, which would cut package loading
+   * off half way, so they are off while it happens — and back on afterwards,
+   * or the run that follows could never be interrupted either.
+   */
+  private async whileUninterruptible<T>(work: () => Promise<T>) {
+    this.pyodide!.setInterruptBuffer(undefined as any);
+    try {
+      return await work();
+    } finally {
+      this.pyodide!.setInterruptBuffer(this.interruptBuffer);
+    }
+  }
+
   async load(code: string, filename: string): Promise<void> {
     if (!this.pyodide)
       return console.warn("Worker has not yet been initialized");
 
-    this.pyodide.setInterruptBuffer(undefined as any); // Disable interrupts while loading packages
-
-    const { loadedPackages, messageCallback } =
-      loadMsgFilterAndCollectPackages();
-    await this.pyodide.loadPackagesFromImports(code, { messageCallback });
-    await tryResolveProblematicDependencies(this.pyodide, loadedPackages);
-    const { discoveredDirs } = await tryLoadImportsOfLocallyImportedModules(
-      this.pyodide,
-      code,
-      filename,
-    );
-    for (const dir of discoveredDirs)
-      await this.addAncestryToSysPath(dir, false);
-    await this.addAncestryToSysPath(filename, false);
+    await this.whileUninterruptible(async () => {
+      const { loadedPackages, messageCallback } =
+        loadMsgFilterAndCollectPackages();
+      await this.pyodide!.loadPackagesFromImports(code, { messageCallback });
+      await tryResolveProblematicDependencies(this.pyodide!, loadedPackages);
+      const { discoveredDirs } = await tryLoadImportsOfLocallyImportedModules(
+        this.pyodide!,
+        code,
+        filename,
+      );
+      for (const dir of discoveredDirs)
+        await this.addAncestryToSysPath(dir, false);
+      await this.addAncestryToSysPath(filename, false);
+    });
   }
 
   async run(

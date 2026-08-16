@@ -2,6 +2,7 @@
 
 import KernelWorker from "./worker/kernel-worker?worker";
 import { HostBridge } from "./worker/bridge";
+import type { Patience } from "./worker/channel";
 import type { Kernel } from "./worker/kernel-worker";
 import { contents, type Contents } from "./contents";
 import { base64, flatPromise, type Awaitable, type Expand } from "./utils";
@@ -27,6 +28,15 @@ export type Environment = {
    * run without reaching the network.
    */
   indexURL?: string;
+  /**
+   * How long Python waits on the page before giving up on it.
+   *
+   * The default allows five minutes, which is generous for a filesystem and
+   * short for a prompt a person has to answer. Raise it if the page can
+   * legitimately take longer; there is no way to tell a slow answer from one
+   * that is never coming, so this is the only thing that distinguishes them.
+   */
+  patience?: Patience;
 };
 
 export namespace Run {
@@ -123,6 +133,7 @@ export default class PythonKernel {
       buffers: bridge.buffers,
       globalThisId: bridge.objects.registerRootObject(globalThis),
       indexURL: environment.indexURL,
+      patience: environment.patience,
     };
 
     this.ready = new Promise((resolve) => {
