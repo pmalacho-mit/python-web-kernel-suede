@@ -62,14 +62,50 @@ By default Pyodide itself is fetched from jsDelivr. Pass `indexURL` to
 ## Development
 
 ```bash
-npm run dev       # the demo routes, plus /tests
-npm test          # unit tests for the bridge, codec, and filesystem
-./scripts/browser-tests.sh   # the same bridge, in a real browser
+npm test                     # the bridge, codec, and filesystem, in node
+npm run dev                  # then open /tests
+./scripts/browser-tests.sh   # the same page, driven headlessly, as a report
 ```
 
-The browser tests are [sweater-vest](./sweater-vest-suede) tests under
-`src/lib/*.test.svelte`, driven through a containerized Chromium. They need
-`npm run dev` running and Docker available. The script exists because the kernel
-needs `SharedArrayBuffer`, which a browser only exposes to a cross-origin
-isolated page on an origin it trusts — it forwards the dev server onto the
-browser's own loopback address so that holds.
+`npm test` covers everything that does not need a browser ([tests/](./tests)),
+including the blocking protocol itself — that one runs the worker half in a real
+`node:worker_threads` worker.
+
+Everything else is a [sweater-vest](./sweater-vest-suede) test served at
+`/tests`. `src/lib/kernel-*.test.svelte` exercise the bridge against real
+Pyodide; `src/lib/testing/Workspace.test.svelte` runs the workspaces.
+
+### Workspaces
+
+A folder under [src/lib/testing/workspaces/](./src/lib/testing/workspaces) is a
+workspace: the files Python starts with, exactly as they sit on disk. Python is
+edited in your editor, and the browser only runs it.
+
+```
+workspaces/readfile/
+  main.py         ← the entry point, unless index.ts says otherwise
+  example.txt     ← any file here is on Python's filesystem
+  index.ts        ← optional: what to run, and what to expect of it
+```
+
+```ts
+// workspaces/readfile/index.ts
+import type { Workspace } from "../../workspace";
+
+export const after: Workspace.After = ({ stdout, files, expect }) =>
+  expect(stdout.trim()).toBe(files.get("example.txt"));
+```
+
+A workspace may also export `entries` (files to run, in order — the default is
+`main.py`) and `before` (to set the filesystem up first). Each workspace gets a
+Pyodide worker of its own, so nothing one workspace does is visible to another,
+and no more of them run at once than the machine has cores.
+
+### Running the report
+
+`./scripts/browser-tests.sh` needs `npm run dev` running and Docker available.
+[browser-container.sh](./scripts/browser-container.sh) does the setup the kernel
+forces on it: the browser only exposes `SharedArrayBuffer` to a cross-origin
+isolated page on an origin it trusts, so the dev server is forwarded onto the
+browser's own loopback address, and behind an intercepting proxy its CA is
+installed so Pyodide can be fetched at all.

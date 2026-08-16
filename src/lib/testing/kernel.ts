@@ -13,10 +13,15 @@ export type HarnessOptions = {
   input?: (prompt: string) => Awaitable<string>;
   /** Paths the host refuses to read, so failures can be observed from Python. */
   refuses?: (path: string) => boolean;
+  /**
+   * Where Pyodide comes from. The bundled copy starts instantly but ships no
+   * packages; the CDN copy has everything and is what production uses.
+   */
+  pyodide?: "bundled" | "cdn";
 };
 
-/** The copy Vite already serves, so tests never wait on a CDN. */
-const indexURL = new URL("/node_modules/pyodide/", location.origin).href;
+/** The copy Vite already serves, so tests need not wait on a CDN. */
+const bundledPyodide = new URL("/node_modules/pyodide/", location.origin).href;
 
 const delay = <T>(value: T, milliseconds = 10) =>
   new Promise<T>((resolve) => setTimeout(() => resolve(value), milliseconds));
@@ -34,6 +39,7 @@ export const inMemoryKernel = ({
   delayed = false,
   input = () => "",
   refuses = () => false,
+  pyodide = "bundled",
 }: HarnessOptions = {}) => {
   const store: Files = new Map(Object.entries(files));
   const answer = <T>(value: T): Awaitable<T> => (delayed ? delay(value) : value);
@@ -62,6 +68,8 @@ export const inMemoryKernel = ({
     delete: (path) => answer(void store.delete(path)),
   });
 
+  const indexURL = pyodide === "bundled" ? bundledPyodide : undefined;
+
   return {
     store,
     kernel: new Kernel(Kernel.Environment({ fs, input, indexURL })),
@@ -82,8 +90,9 @@ export const run = async (
   kernel: Kernel,
   code: string,
   path = "main.py",
+  options: { unloadLocalModules?: boolean } = {},
 ) => {
-  const outputs = await kernel.run({ code, path }).result;
+  const outputs = await kernel.run({ code, path, ...options }).result;
   const errors = outputs.filter(
     (output): output is Output.Error => output.output_type === "error",
   );

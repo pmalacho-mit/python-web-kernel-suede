@@ -249,6 +249,7 @@ export class PyodideInstance {
       "queueMicrotask",
       "setInterval",
       "setTimeout",
+      "XMLHttpRequest",
 
       // networking
       "URL",
