@@ -76,6 +76,7 @@ export class ObjectProxyHost {
   registerRootObject(value: any) {
     const id = this.getId(value);
     this.rootReferences.set(id, value);
+    this.identifiers.set(value, id);
     return id;
   }
 

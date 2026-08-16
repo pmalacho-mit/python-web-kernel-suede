@@ -306,9 +306,8 @@ const encoders: Record<Tag, (w: Writer, value: any, context: Context) => void> =
     [TAG.array]: (w, value: unknown[], c) =>
       writeValues(w, value, value.length, c),
     [TAG.set]: (w, value: Set<unknown>, c) => writeValues(w, value, value.size, c),
-      /** Own enumerable string keys only: symbol keys and getters are not sent. */
-    [TAG.record]: (w, value: object, c) =>
-      writeFields(w, Object.entries(value), c),
+    /** Own enumerable string keys only: symbol keys and getters are not sent. */
+  [TAG.record]: (w, value: object, c) => writeFields(w, Object.entries(value), c),
     [TAG.map]: (w, value: Map<unknown, unknown>, c) =>
       writeValues(w, flatten(value), value.size * 2, c),
     [TAG.error]: (w, value: Error) => writeError(w, value),

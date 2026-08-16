@@ -63,7 +63,12 @@ export class ChannelHost {
   sendNextChunk() {
     if (!this.pending)
       return console.warn("No payload in flight to continue writing");
+    if (!this.memory.isAwaiting(this.pending.request)) return this.abandon();
     this.flushNextSlice();
+  }
+
+  private abandon() {
+    this.pending = undefined;
   }
 
   private flushNextSlice() {
@@ -74,7 +79,9 @@ export class ChannelHost {
     );
     this.pending =
       sent + 1 < slice.count ? { payload, sent: sent + 1, request } : undefined;
-    this.memory.unlockSize();
+
+    /** The worker can stop waiting between the check and the write. */
+    if (!this.memory.unlockSize()) this.abandon();
   }
 }
 
@@ -104,6 +111,7 @@ export class ChannelWorker {
       this.awaitAnswer();
       return this.receive();
     } finally {
+      memory.endRequest();
       memory.forceUnlockSize();
       memory.unlockWorker();
     }
