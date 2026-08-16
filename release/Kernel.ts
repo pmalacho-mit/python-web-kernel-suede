@@ -1,26 +1,32 @@
 /// <reference types="vite/client" />
 
 import KernelWorker from "./worker/kernel-worker?worker";
-import { AsyncMemory } from "./worker/async-memory";
-import { ObjectProxyHost } from "./worker/object-proxy";
+import { HostBridge } from "./worker/bridge";
 import type { Kernel } from "./worker/kernel-worker";
-import type { SyncFileSystem } from "./worker/emscripten-fs";
-import { flatPromise, toBase64, type Expand } from "./utils";
+import { contents, type Contents } from "./contents";
+import { base64, flatPromise, type Awaitable, type Expand } from "./utils";
 import { type Output, make } from "./output";
-import fs from "./fs";
+import fs, { type HostFileSystem } from "./fs";
 
 export type Environment = {
   /**
-   * Synchronous filesystem bridge exposed to the Python worker, including its mount root.
+   * Filesystem the Python worker reads and writes through, including its mount
+   * root. Every method may answer with a promise.
    */
-  fs: SyncFileSystem & {
+  fs: HostFileSystem & {
     /**
      * The root path that the filesystem is mounted at in the Python environment.
      */
     root: string;
   };
   /** Prompt handler used when Python requests user input. */
-  input: (prompt: string) => string;
+  input: (prompt: string) => Awaitable<string>;
+  /**
+   * Where Pyodide's own runtime files are served from. Defaults to the CDN copy
+   * matching the pinned Pyodide version; point it at a same-origin directory to
+   * run without reaching the network.
+   */
+  indexURL?: string;
 };
 
 export namespace Run {
@@ -51,13 +57,8 @@ const fromRoot = ({ fs: { root } }: Environment, path: string) =>
 /** Default filename used when code is executed without an explicit path. */
 const defaultPath = (env: Environment) => fromRoot(env, "temp.py");
 
-/** Attach worker message handling for proxy traffic and kernel lifecycle events. */
-const handleMessages = ({
-  worker,
-  objectProxyHost,
-  asyncMemory,
-  callbacks,
-}: PythonKernel) =>
+/** Attach worker message handling for bridge traffic and kernel lifecycle events. */
+const handleMessages = ({ worker, bridge, callbacks }: PythonKernel) =>
   worker.addEventListener("message", (ev: MessageEvent) => {
     if (!ev.data) {
       console.warn("Unexpected message from kernel manager", ev);
@@ -65,22 +66,15 @@ const handleMessages = ({
     }
     const data = ev.data as Kernel.Response;
 
-    if (
-      data.type === "proxy_reflect" ||
-      data.type === "proxy_shared_memory" ||
-      data.type === "proxy_print_object" ||
-      data.type === "proxy_promise"
-    )
-      objectProxyHost.handleProxyMessage(data, asyncMemory);
-    else if (data.type === "output") callbacks.output?.(data);
+    if (bridge.handle(data)) return;
+    if (data.type === "output") callbacks.output?.(data);
     else if (data.type === "finished" || data.type === "loaded")
       callbacks[data.type]?.();
   });
 
 export default class PythonKernel {
   readonly worker = new KernelWorker();
-  readonly asyncMemory = new AsyncMemory();
-  readonly objectProxyHost = new ObjectProxyHost(this.asyncMemory);
+  readonly bridge: HostBridge;
   readonly environment: Environment;
 
   readonly callbacks = {
@@ -119,22 +113,16 @@ export default class PythonKernel {
     this.environment = environment;
     const { fs, input } = environment;
 
+    this.bridge = new HostBridge({ fs, input: { prompt: input } });
     handleMessages(this);
-    const { worker, objectProxyHost } = this;
+    const { worker, bridge } = this;
 
     const payload: Kernel.Request = {
       type: "initialize",
       root: fs.root,
-      asyncMemory: {
-        lockBuffer: this.asyncMemory.sharedLock,
-        dataBuffer: this.asyncMemory.sharedMemory,
-        interruptBuffer: this.asyncMemory.interruptBuffer,
-      },
-      ids: {
-        getInput: objectProxyHost.registerRootObject(input),
-        filesystem: objectProxyHost.registerRootObject(fs),
-        globalThis: objectProxyHost.registerRootObject(globalThis),
-      },
+      buffers: bridge.buffers,
+      globalThisId: bridge.objects.registerRootObject(globalThis),
+      indexURL: environment.indexURL,
     };
 
     this.ready = new Promise((resolve) => {
@@ -153,12 +141,12 @@ export default class PythonKernel {
 
   /** Interrupt the currently executing Python code, if any. */
   interrupt() {
-    this.asyncMemory.interrupt();
+    this.bridge.memory.interrupt();
   }
 
   /** Clear the interrupt flag before a new operation starts. */
   clearInterrupt() {
-    this.asyncMemory.clearInterrupt();
+    this.bridge.memory.clearInterrupt();
   }
 
   /**
@@ -290,24 +278,30 @@ export default class PythonKernel {
   /** Terminate worker resources and shared memory handles. */
   dispose() {
     this.worker.terminate();
-    this.asyncMemory.dispose();
+    this.bridge.dispose();
   }
 
-  assetURL(request: { path: string }): string | null;
-  assetURL(request: { value: string; path: string }): string | null;
-  assetURL(request: { value: string; mimeType: string }): string | null;
-  assetURL(request: { path: string } | { value: string; mimeType: string }) {
+  /** Build a `data:` URL for contents already in hand. */
+  assetURL(request: { value: Contents; path: string }): string | null;
+  assetURL(request: { value: Contents; mimeType: string }): string | null;
+  /** Read the file out of the environment's filesystem, then build its URL. */
+  assetURL(request: { path: string }): Promise<string | null>;
+  assetURL(
+    request:
+      | { path: string }
+      | ({ value: Contents } & ({ path: string } | { mimeType: string })),
+  ) {
     if ("value" in request) return PythonKernel.AssetUrl(request);
-    else {
-      const value = this.environment.fs.get(request);
-      const { path } = request;
-      if (typeof value !== "string") {
-        console.warn(`Asset at path "${path}" not found or is a directory`);
-        return null;
-      }
-      const mimeType = fs.inferMimeType(path);
-      return PythonKernel.AssetUrl({ value, mimeType });
+    return this.readAssetURL(request.path);
+  }
+
+  private async readAssetURL(path: string) {
+    const result = await this.environment.fs.get({ path });
+    if (!result.ok || result.data === null) {
+      console.warn(`Asset at path "${path}" not found or is a directory`);
+      return null;
     }
+    return PythonKernel.AssetUrl({ value: result.data, path });
   }
 
   static readonly DefaultFileSystemRoot = fs.defaultRoot;
@@ -341,20 +335,21 @@ export default class PythonKernel {
     value,
     ...rest
   }: {
-    value: string;
+    value: Contents;
   } & ({ path: string } | { mimeType: string })) {
-    if (value === null) return null;
-    if (value.startsWith("data:")) return value;
+    if (value === null || value === undefined) return null;
+    if (contents.isText(value) && value.startsWith("data:")) return value;
     const mimeType =
       "mimeType" in rest ? rest.mimeType : fs.inferMimeType(rest.path);
-    return `data:${mimeType};base64,${toBase64(value)}`;
+    return `data:${mimeType};base64,${base64.encode(value)}`;
   }
 
   /** Build an environment with default filesystem and input handlers. */
   static readonly Environment = ({
     fs = PythonKernel.EmptyFileSystem(),
     input = PythonKernel.DefaultInput,
-  }: Partial<Environment> = {}): Environment => ({ input, fs });
+    ...rest
+  }: Partial<Environment> = {}): Environment => ({ input, fs, ...rest });
 
   /** Construct a kernel with the default environment configuration. */
   static readonly Default = () => new PythonKernel(PythonKernel.Environment());

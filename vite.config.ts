@@ -23,6 +23,14 @@ export default applyReleaseConfig(
               exclude: ["src/**/*.svelte.{test,spec}.{js,ts}"],
             },
           },
+          {
+            extends: "./vite.config.ts",
+            test: {
+              name: "kernel",
+              environment: "node",
+              include: ["release/**/*.{test,spec}.{js,ts}"],
+            },
+          },
         ],
       },
     }),

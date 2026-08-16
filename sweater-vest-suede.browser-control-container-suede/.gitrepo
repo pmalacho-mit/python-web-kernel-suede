@@ -1,0 +1,12 @@
+; DO NOT EDIT (unless you know what you are doing)
+;
+; This subdirectory is a git "subrepo", and this file is maintained automatically
+; by the git-subrepo command. See https://github.com/ingydotnet/git-subrepo#readme
+;
+[subrepo]
+	remote = git@github.com:pmalacho-mit/browser-control-container-suede.git
+	branch = release
+	commit = a2d69b38dc00476a095f74627c9c5be7528cb9a2
+	parent = b64a905fe7a5c188d701a1f2d23648648ee6cde8
+	method = merge
+	cmdver = 0.4.9

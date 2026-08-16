@@ -48,11 +48,19 @@ export class AsyncMemory {
   readonly interruptBuffer: SharedArrayBuffer;
   readonly interrupter: Uint8Array;
 
-  constructor(
-    sharedLock?: SharedArrayBuffer,
-    sharedMemory?: SharedArrayBuffer,
-    interruptBuffer?: SharedArrayBuffer,
-  ) {
+  /**
+   * Payloads larger than this are transferred one slice at a time, so the
+   * default is generous enough that ordinary files cross in a single trip.
+   */
+  static readonly DEFAULT_CAPACITY = 1024 * 1024;
+  static readonly MINIMUM_CAPACITY = 1024;
+
+  constructor({
+    sharedLock,
+    sharedMemory,
+    interruptBuffer,
+    capacity = AsyncMemory.DEFAULT_CAPACITY,
+  }: Partial<AsyncMemory.Buffers> & { capacity?: number } = {}) {
     this.sharedLock =
       sharedLock ?? new SharedArrayBuffer(8 * Int32Array.BYTES_PER_ELEMENT);
     this.lockAndSize = new Int32Array(this.sharedLock);
@@ -60,15 +68,22 @@ export class AsyncMemory {
       throw new Error("Expected an sharedLock with at least 8x32 bytes");
     }
 
-    this.sharedMemory = sharedMemory ?? new SharedArrayBuffer(1024);
+    this.sharedMemory = sharedMemory ?? new SharedArrayBuffer(capacity);
     this.memory = new Uint8Array(this.sharedMemory);
 
-    if (this.sharedMemory.byteLength < 1024) {
-      throw new Error("Expected an sharedMemory with at least 1024 bytes");
+    if (this.sharedMemory.byteLength < AsyncMemory.MINIMUM_CAPACITY) {
+      throw new Error(
+        `Expected an sharedMemory with at least ${AsyncMemory.MINIMUM_CAPACITY} bytes`,
+      );
     }
 
     this.interruptBuffer = interruptBuffer ?? new SharedArrayBuffer(1);
     this.interrupter = new Uint8Array(this.interruptBuffer);
+  }
+
+  get buffers(): AsyncMemory.Buffers {
+    const { sharedLock, sharedMemory, interruptBuffer } = this;
+    return { sharedLock, sharedMemory, interruptBuffer };
   }
 
   /**
@@ -196,4 +211,13 @@ export class AsyncMemory {
     this.forceUnlockSize();
     this.unlockWorker();
   }
+}
+
+export namespace AsyncMemory {
+  /** The shared buffers both threads have to agree on to talk to each other. */
+  export type Buffers = {
+    sharedLock: SharedArrayBuffer;
+    sharedMemory: SharedArrayBuffer;
+    interruptBuffer: SharedArrayBuffer;
+  };
 }

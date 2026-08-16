@@ -1,3 +1,5 @@
+import { contents, type Contents } from "./contents";
+
 export type Expand<T> = T extends infer O ? { [K in keyof O]: O[K] } : never;
 
 export type ExpandRecursively<T> = T extends object
@@ -65,16 +67,39 @@ export const join = (...parts: (string | undefined | null)[]): string =>
     .map((part) => part!.replace(/(^\/+|\/+$)/g, ""))
     .join("/");
 
-export const toBase64 = (value: string) => {
-  if (!value) return "";
-  const bytes = Uint8Array.from(value, (character) => character.charCodeAt(0));
-  const chunkSize = 0x8000;
+/** A value the caller may have to wait for, or may already have. */
+export type Awaitable<T> = T | Promise<T>;
+
+const isPromise = <T>(value: Awaitable<T>): value is Promise<T> =>
+  typeof (value as any)?.then === "function";
+
+export const awaited = {
+  is: isPromise,
+  /** Continues with `then`, without making a synchronous value asynchronous. */
+  map: <T, R>(
+    value: Awaitable<T>,
+    then: (value: T) => Awaitable<R>,
+  ): Awaitable<R> => (isPromise(value) ? value.then(then) : then(value)),
+};
+
+const BASE64_CHUNK = 0x8000;
+
+const binaryString = (bytes: Uint8Array) => {
   let binary = "";
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    const chunk = bytes.subarray(index, index + chunkSize);
-    binary += String.fromCharCode(...chunk);
-  }
-  return btoa(binary);
+  for (let index = 0; index < bytes.length; index += BASE64_CHUNK)
+    binary += String.fromCharCode(
+      ...bytes.subarray(index, index + BASE64_CHUNK),
+    );
+  return binary;
+};
+
+export const base64 = {
+  encode: (value: Contents) => {
+    const bytes = contents.toBytes(value);
+    return bytes.length === 0 ? "" : btoa(binaryString(bytes));
+  },
+  decode: (value: string) =>
+    Uint8Array.from(atob(value), (character) => character.charCodeAt(0)),
 };
 
 export const dirname = (path: string): string =>

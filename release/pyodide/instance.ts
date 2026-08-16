@@ -17,6 +17,26 @@ const Char = {
   NewLine: 10,
 } as const;
 
+const encoder = new TextEncoder();
+const decoder = new TextDecoder("utf-8");
+
+/**
+ * Python writes stdout one byte at a time, so a line is only text once every
+ * byte of it has arrived: decoding byte by byte would split characters.
+ */
+const pendingLine = () => {
+  const bytes: number[] = [];
+  return {
+    push: (byte: number) => bytes.push(byte),
+    take: () => {
+      const text = decoder.decode(Uint8Array.from(bytes));
+      bytes.length = 0;
+      return text;
+    },
+    peek: () => decoder.decode(Uint8Array.from(bytes)),
+  };
+};
+
 const io = (
   manager: Kernel,
 ): {
@@ -24,14 +44,13 @@ const io = (
     PyodideAPI[`set${Capitalize<k>}`]
   >[0];
 } => {
-  let acc = "";
+  const line = pendingLine();
 
-  const encoder = new TextEncoder();
   let input = new Uint8Array();
   let inputIndex = -1; // -1 means that we just returned null
   const stdin = () => {
     if (inputIndex === -1) {
-      const text = manager.input(acc);
+      const text = manager.input(line.peek());
       input = encoder.encode(text + (text.endsWith("\n") ? "" : "\n"));
       inputIndex = 0;
     }
@@ -47,10 +66,9 @@ const io = (
   };
 
   const raw = (charCode: number) => {
-    if (charCode === Char.NewLine) {
-      manager.output(make("stream", "out", acc));
-      acc = "";
-    } else acc += String.fromCharCode(charCode);
+    if (charCode === Char.NewLine)
+      manager.output(make("stream", "out", line.take()));
+    else line.push(charCode);
   };
 
   const batched = (output: string) =>
@@ -59,9 +77,13 @@ const io = (
   return { stdin: { stdin }, stdout: { raw }, stderr: { batched } };
 };
 
+/** Where Pyodide's own runtime files are served from. */
+export const defaultIndexURL = `https://cdn.jsdelivr.net/pyodide/v${version}/full/`;
+
 export class PyodideInstance {
   readonly globalThisId: string;
   readonly interruptBuffer: Uint8Array<ArrayBufferLike>;
+  readonly indexURL: string;
 
   proxiedGlobalThis: undefined | any;
 
@@ -71,19 +93,19 @@ export class PyodideInstance {
   constructor(options: {
     globalThisId: string;
     interruptBuffer: Uint8Array<ArrayBufferLike>;
+    indexURL?: string;
   }) {
     this.globalThisId = options.globalThisId;
     this.interruptBuffer = options.interruptBuffer;
+    this.indexURL = options.indexURL ?? defaultIndexURL;
   }
 
   async init(manager: Kernel, root: string): Promise<any> {
     this.root = root;
     this.proxiedGlobalThis = this.proxyGlobalThis(manager, this.globalThisId);
 
-    const indexURL = `https://cdn.jsdelivr.net/pyodide/v${version}/full/`;
-
     this.pyodide = await loadPyodide({
-      indexURL,
+      indexURL: this.indexURL,
       fullStdLib: false,
     });
 
@@ -93,9 +115,7 @@ export class PyodideInstance {
     this.pyodide.setStdout(stdout);
     this.pyodide.setStderr(stderr);
 
-    await patchMatplotlib(this.pyodide, (payload) =>
-      manager.output(make("display_data", "image", payload)),
-    );
+    await this.tryPatchMatplotlib(manager);
 
     this.pyodide.setInterruptBuffer(this.interruptBuffer);
 
@@ -107,6 +127,20 @@ export class PyodideInstance {
 
     this.pyodide.FS.mount(new EMFS(this.pyodide, manager.syncFs), {}, root);
     this.pyodide.registerJsModule("js", this.proxiedGlobalThis);
+  }
+
+  /**
+   * Plotting is an extra: a kernel whose page cannot fetch matplotlib still has
+   * to finish starting, or every later call would wait on it forever.
+   */
+  private async tryPatchMatplotlib(manager: Kernel) {
+    try {
+      await patchMatplotlib(this.pyodide!, (payload) =>
+        manager.output(make("display_data", "image", payload)),
+      );
+    } catch (error) {
+      console.warn("Matplotlib is unavailable in this kernel", error);
+    }
   }
 
   async unloadLocalModules() {

@@ -8,6 +8,18 @@
   const tryAddExtension = (name: string) =>
     /\.[^./]+$/.test(name) ? name : `${name}.py`;
 
+  const IMAGE_SUFFIXES = [".png", ".gif", ".jpg", ".jpeg", ".webp", ".svg"];
+
+  const isImage = (path: string) =>
+    IMAGE_SUFFIXES.some((suffix) => path.toLowerCase().endsWith(suffix));
+
+  const absolute = (path: string) => (path.startsWith("/") ? path : `/${path}`);
+
+  const basename = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+
+  const directoryOf = (path: string) =>
+    path.slice(0, path.lastIndexOf("/")) || "/";
+
   const walk = (
     fs: Filesystem,
     models?: {
@@ -129,18 +141,23 @@
   </div>
 {/snippet}
 
-{#snippet image({
-  params: { file, kernel },
-}: PanelProps<"grid", { file: Editor.Model; kernel: Kernel }>)}
-  {@const src = kernel.assetURL({ value: file.source, path: file.path })}
-  <div class="flex h-full w-full items-center justify-center bg-slate-50">
-    {#if src}
+{#snippet asset({
+  params: { path, bytes, kernel },
+}: PanelProps<"grid", { path: string; bytes: Uint8Array; kernel: Kernel }>)}
+  {@const src = kernel.assetURL({ value: bytes, path })}
+  <div
+    class="flex h-full w-full flex-col items-center justify-center gap-2 bg-slate-50 p-3"
+  >
+    {#if src && isImage(path)}
       <img
         {src}
-        alt={file.name}
+        alt={path}
         class="max-h-full max-w-full rounded-lg border border-slate-200 bg-white p-2 shadow-sm"
       />
     {/if}
+    <div class="text-xs text-slate-500">
+      {path} — {bytes.byteLength.toLocaleString()} bytes
+    </div>
   </div>
 {/snippet}
 
@@ -168,10 +185,11 @@
       code,
       output,
       directories,
-      image,
+      asset,
     }}
     onReady={({ api }) => {
       const models = walk(fs);
+      const assets = new Map<string, Uint8Array>();
       const directories = models
         .filter((m) => m.type === "directory")
         .map((m) => m.model);
@@ -198,13 +216,23 @@
       };
 
       const addPanel = (file: Editor.Model) => {
-        const details = { id: file.path };
         if (file.path.endsWith("__init__.py")) return;
-        if (file.name.endsWith(".png"))
-          api.addSnippetPanel("image", { file, kernel }, details);
-        else if (file.name.endsWith(".gif"))
-          api.addSnippetPanel("image", { file, kernel }, details);
-        else api.addSnippetPanel("code", { file, run }, details);
+        api.addSnippetPanel("code", { file, run }, { id: file.path });
+      };
+
+      const replacePanel = (path: string) => {
+        const panel = api.getPanel(path);
+        if (panel) api.removePanel(panel);
+      };
+
+      const addAssetPanel = (path: string, bytes: Uint8Array) => {
+        replacePanel(path);
+        api.addSnippetPanel("asset", { path, bytes, kernel }, { id: path });
+      };
+
+      const putAsset = (path: string, bytes: Uint8Array) => {
+        assets.set(path, bytes);
+        addAssetPanel(path, bytes);
       };
 
       const kernel = new Kernel(
@@ -213,22 +241,21 @@
             removeLeadingSlash: false,
             log: true,
             get: (path) => {
-              console.log("Getting file:", path);
               const source = models.find(({ model }) => model.path === path);
               if (source)
                 return source.type === "file"
                   ? source.model.source
                   : { directory: true };
-              return null;
+              return assets.get(path) ?? null;
             },
             put: (path, source) => {
-              console.log("Putting file:", path, source);
-              if (!path.startsWith("/")) path = "/" + path;
+              path = absolute(path);
+              if (source instanceof Uint8Array) return putAsset(path, source);
+
               const existing = models.find(({ model }) => model.path === path);
 
               if (existing) {
-                const panel = api.getPanel(path);
-                if (panel) api.removePanel(panel);
+                replacePanel(path);
                 if (source === null) models.splice(models.indexOf(existing), 1);
                 else {
                   existing.model.source = source;
@@ -250,18 +277,16 @@
                 addPanel(file);
               }
             },
-            listDirectory: (path) => {
-              const results =
-                path === "/"
-                  ? models
-                      .filter(({ parent }) => parent === root)
-                      .map(({ model }) => model.name)
-                  : models
-                      .filter(({ parent, type }) => parent.path === path)
-                      .map(({ model }) => model.name);
-              console.log("Listing directory:", path, results);
-              return results;
-            },
+            listDirectory: (path) => [
+              ...models
+                .filter(({ parent }) =>
+                  path === "/" ? parent === root : parent.path === path,
+                )
+                .map(({ model }) => model.name),
+              ...[...assets.keys()]
+                .filter((key) => directoryOf(key) === path)
+                .map(basename),
+            ],
           }),
         }),
       );
