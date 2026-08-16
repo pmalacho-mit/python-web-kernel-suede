@@ -50,11 +50,9 @@ export function flatPromise<T = any, E = any>(
     reject = rej;
   });
 
-  if (executor) {
-    // This is actually valid.. as in the spec the function above the Promise gets executed immediately.
-    executor(resolve, reject);
-  }
-
+  // This is actually valid.. as in the spec the function above the Promise gets executed immediately.
+  executor?.(resolve, reject);
+  
   return { promise, resolve, reject };
 }
 

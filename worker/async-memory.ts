@@ -199,6 +199,20 @@ export class AsyncMemory {
     Atomics.notify(this.lockAndSize, AsyncMemory.LOCK_WORKER_INDEX);
   }
 
+  /**
+   * Frees the worker lock however it was left. Unlike {@link unlockWorker}
+   * this is legal when nothing held it, which is the usual case when a kernel
+   * is disposed of between runs.
+   */
+  forceUnlockWorker() {
+    Atomics.store(
+      this.lockAndSize,
+      AsyncMemory.LOCK_WORKER_INDEX,
+      AsyncMemory.UNLOCKED,
+    );
+    Atomics.notify(this.lockAndSize, AsyncMemory.LOCK_WORKER_INDEX);
+  }
+
   interrupt(code = AsyncMemory.SIGINT) {
     this.interrupter[0] = code;
   }
@@ -209,7 +223,7 @@ export class AsyncMemory {
 
   dispose() {
     this.forceUnlockSize();
-    this.unlockWorker();
+    this.forceUnlockWorker();
   }
 }
 
